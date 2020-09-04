@@ -1972,6 +1972,27 @@ static constexpr OrtApi ort_api_1_to_5 = {
     &OrtApis::ClearBoundOutputs,
     &OrtApis::TensorAt,
     &OrtApis::CreateAndRegisterAllocator,
+
+    &OrtApis::CreateKernelSession,
+    &OrtApis::CreateExecutableKernelContext,
+    &OrtApis::ExecutableKernelContext_AddInput,
+    &OrtApis::ExecutableKernelContext_AddOutput,
+    &OrtApis::ExecutableKernelContext_AddAttributeString,
+    &OrtApis::ExecutableKernelContext_AddAttributeStrings,
+    &OrtApis::ExecutableKernelContext_AddAttributeFloat,
+    &OrtApis::ExecutableKernelContext_AddAttributeFloats,
+    &OrtApis::ExecutableKernelContext_AddAttributeInt,
+    &OrtApis::ExecutableKernelContext_AddAttributeInts,
+    &OrtApis::ExecutableKernelContext_AddAttributeTensor,
+    &OrtApis::CreateExecutableKernel,
+    &OrtApis::ExecutableKernel_SetInput,
+    &OrtApis::ExecutableKernel_SetOutput,
+    &OrtApis::ExecutableKernel_Compute,
+    &OrtApis::ExecutableKernel_IsOutputOnCpu,
+    &OrtApis::ExecutableKernel_IsInputOnCpu,
+    &OrtApis::ReleaseKernelSession,
+    &OrtApis::ReleaseExecutableKernel,
+    &OrtApis::ReleaseExecutableKernelContext
 };
 
 // Assert to do a limited check to ensure Version 1 of OrtApi never changes (will detect an addition or deletion but not if they cancel out each other)
