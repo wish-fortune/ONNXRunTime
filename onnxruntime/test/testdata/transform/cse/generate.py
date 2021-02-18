@@ -1,5 +1,5 @@
 import onnx
-from onnx import helper, shape_inference
+from onnx import helper, numpy_helper, shape_inference
 from onnx import AttributeProto, TensorProto, GraphProto
 import os
 
@@ -43,6 +43,130 @@ def cse1():
     ]
   )
   _onnx_export(graph_def, 'cse1.onnx')
+
+def cse_initializer_simple():
+  nodes = []
+  initializers = []
+  outputs = []
+  
+  for i in range(0, 5):
+    padding_output_name = 'x_padding_{}'.format(i)
+    
+    # generate pad nodes with either 1 or 2 as the padding
+    # so that we end up with 2 equivalence classes
+    pad_val_ = 1 + i%2;
+    
+    padding = helper.make_node(
+      op_type = "Constant",
+      inputs = [],
+      outputs = ['pad_val_{}'.format(i)],
+      value=numpy_helper.from_array(numpy_helper.np.array([0, 0, pad_val_, pad_val_, 0, 0, pad_val_, pad_val_])))
+      
+    pad_node = helper.make_node(
+      op_type = "Pad",
+      inputs = ['x', 'pad_val_{}'.format(i)],
+      outputs = [padding_output_name],
+      name = 'padding_{}'.format(i)
+    )
+        
+    conv_output_name = 'x_padding_conv_{}'.format(i)
+    
+    conv_node = helper.make_node(
+      op_type = "Conv",
+      inputs = [padding_output_name, 'weights_{}'.format(i)],
+      outputs = [conv_output_name],
+      name = 'conv_{}'.format(i),
+      dilations=[1,1],
+      group=1,
+      kernel_shape=[3,3],
+      pads=[0,0,0,0],
+      strides=[1,1]
+    )
+    
+    conv_weights = numpy_helper.np.random.randn(1,3,3,3)
+    conv_weights = numpy_helper.from_array(conv_weights)
+    conv_weights.name = 'weights_{}'.format(i)
+        
+    conv_output = helper.make_tensor_value_info(
+      conv_output_name,
+      TensorProto.DOUBLE,
+      [])
+      
+    nodes.append(padding)
+    nodes.append(pad_node)
+    nodes.append(conv_node)
+    initializers.append(conv_weights)
+    
+    outputs.append(conv_output)
+    
+  graph_def = helper.make_graph(
+    nodes=nodes,
+    name = 'cse_initializer_graph_output',
+    inputs = [ helper.make_tensor_value_info("x", TensorProto.DOUBLE, [1, 3, 5, 5])],
+    outputs = outputs,
+    initializer = initializers)
+  
+  _onnx_export(graph_def, 'cse_initializer_simple.onnx')
+
+def cse_initializer_commutative_ops():
+  mul_input_2 = numpy_helper.np.random.randn(1,3,5,5)
+  mul_input_2 = numpy_helper.from_array(mul_input_2)
+  mul_input_2.name = 'mul_constants'
+  
+  nodes = []
+  initializers = [mul_input_2]
+  outputs = []
+  
+  for i in range(0, 4):
+    mul_output_name = 'mul_{}'.format(i)
+    
+    mul_inputs = \
+      ['x', 'mul_constants'] if i%2 == 0 else ['mul_constants', 'x']
+      
+    mult_node = helper.make_node(
+      op_type = "Div",
+      inputs = mul_inputs,
+      outputs = [mul_output_name],
+      name = mul_output_name,
+    )
+    
+    conv_output_name = 'x_mul_conv_{}'.format(i)
+    
+    conv_weights = numpy_helper.np.random.randn(1,3,3,3)
+    conv_weights = numpy_helper.from_array(conv_weights)
+    conv_weights.name = 'weights_{}'.format(i)
+    
+    conv_node = helper.make_node(
+      op_type = "Conv",
+      inputs = [mul_output_name, 'weights_{}'.format(i)],
+      outputs = [conv_output_name],
+      name = 'conv_{}'.format(i),
+      dilations=[1,1],
+      group=1,
+      kernel_shape=[3,3],
+      pads=[0,0,0,0],
+      strides=[1,1]
+    )
+        
+    conv_output = helper.make_tensor_value_info(
+      conv_output_name,
+      TensorProto.DOUBLE,
+      [])
+      
+    nodes.append(mult_node)
+    nodes.append(conv_node)
+    initializers.append(conv_weights)
+    
+    outputs.append(conv_output)
+    
+  graph_def = helper.make_graph(
+    nodes=nodes,
+    name = 'cse_initializer_graph_output',
+    inputs = [ helper.make_tensor_value_info("x", TensorProto.DOUBLE, [1, 3, 5, 5])],
+    outputs = outputs,
+    initializer = initializers)
+  
+  _onnx_export(graph_def, 'cse_initializer_commutative.onnx')
 
 def cse_graph_output():
   graph_def = helper.make_graph(
@@ -220,6 +344,8 @@ def cse_only_one_graph_output():
 
 def generate_all():
   cse1()
+  cse_initializer_simple()
+  cse_initializer_commutative_ops()
   cse_graph_output()
   cse_optional_args()
   cse_subgraph()
