@@ -128,6 +128,10 @@ bool IsBackward(Node& node) {
   return (node.Description() == "Backward pass");
 }
 
+bool IsBackward(const Node& node) {
+  return (node.Description() == "Backward pass");
+}
+
 NodeArg& CreateTypedNodeArg(Graph& graph, onnx::TensorProto_DataType type, const std::string& name) {
   ONNX_NAMESPACE::TypeProto type_proto;
   type_proto.mutable_tensor_type()->set_elem_type(type);
@@ -896,8 +900,8 @@ struct PipelineStageNodeGroup {
 common::Status AddPassthroughInitializer(Graph& graph,
                                          NodeArg* initializer,
                                          const std::vector<PipelineStageNodeGroup>& node_groups,
-                                         const std::vector<Node*>& send_nodes,
-                                         const std::vector<Node*>& recv_nodes) {
+                                         const std::vector<std::pair<Node*, Node*>>& send_nodes,
+                                         const std::vector<std::pair<Node*, Node*>>& recv_nodes) {
   assert(initializer);
   ORT_ENFORCE(node_groups.size() >= 2, "Initializer ", initializer->Name(), " is not shared across stages.");
 
@@ -914,22 +918,34 @@ common::Status AddPassthroughInitializer(Graph& graph,
   size_t node_group_index = 1;
   for (auto i = from_stage; i < to_stage; ++i) {
     // processing send node in cut i
-    auto& send_attributes = send_nodes[i]->GetMutableAttributes();
+    Node* send_node = send_nodes.at(i).first;
+    ORT_ENFORCE(send_node, "Send in stage ", i, " not found.");
+    auto& send_attributes = send_node->GetMutableAttributes();
     auto& send_element_types = send_attributes["element_types"];
     send_element_types.add_ints(static_cast<int64_t>(dtype));
-    send_nodes[i]->MutableInputDefs().push_back(current_node_arg);
-    send_nodes[i]->MutableInputArgsCount().back()++;
+    send_node->MutableInputDefs().push_back(current_node_arg);
+    send_node->MutableInputArgsCount().back()++;
 
     // Create a new node_arg for the recv, as the new node_arg from recv node should possess a different id
     // than the one in send
     assert(current_node_arg);
     current_node_arg = &CreateNodeArg(graph, *current_node_arg);
 
+    const auto* old_shape = initializer->Shape();
+    if (old_shape != nullptr) {
+      current_node_arg->SetShape(*old_shape);
+    }
+    // Add value info for this newly added receive_output, for shape propagation
+    // when training this partition.
+    graph.AddValueInfo(current_node_arg);
+
     // process recv node in cut i
-    auto& recv_attributes = recv_nodes[i]->GetMutableAttributes();
+    Node* receive_node = recv_nodes.at(i + 1).first;
+    ORT_ENFORCE(receive_node, "Receive in stage ", (i + 1), " not found.");
+    auto& recv_attributes = receive_node->GetMutableAttributes();
     auto& recv_element_types = recv_attributes["element_types"];
     recv_element_types.add_ints(static_cast<int64_t>(dtype));
-    recv_nodes[i]->MutableOutputDefs().push_back(current_node_arg);
+    receive_node->MutableOutputDefs().push_back(current_node_arg);
 
     // update the consumer node's input if the node's group is not in the first partition
     if (node_groups[node_group_index].stage_id == (i + 1)) {
@@ -997,15 +1013,15 @@ Status TraverseGraphWithConnectedElement(Graph& graph,
 // the very first partition it appears, and pass that data down to all following partitions
 // where this initializer is used.
 common::Status HandleSharedInitializer(Graph& graph,
-                                       const std::vector<Node*>& send_nodes,
-                                       const std::vector<Node*>& recv_nodes) {
+                                       const std::vector<std::pair<Node*, Node*>>& send_nodes,
+                                       const std::vector<std::pair<Node*, Node*>>& recv_nodes) {
   // Map a given initializer to all the partitions that its consumer nodes reside. The size of
   // the mapped vector reflects how many partitions this initializer's consumer nodes distribute.
   // If its size is greater than 1, it means this initializer is being used in more than one partition and
   // we need to proceed those cases.
   std::map<NodeArg*, std::vector<PipelineStageNodeGroup>> input_consumer_stage_map;
 
-  for (size_t stage = 0; stage <= send_nodes.size(); ++stage) {
+  for (size_t stage = 0; stage < send_nodes.size(); ++stage) {
     std::set<Node*> visited_nodes;
     std::set<NodeArg*> visited_inputs;
     std::set<NodeArg*> visited_outputs;
@@ -1013,7 +1029,8 @@ common::Status HandleSharedInitializer(Graph& graph,
     // send_nodes[i] is the Send op in i-th stage's forward pass. recv_nodes[i] is the Recv in the (i+1)-th stage's
     // forward pass. When not in last stage, traverse start from send node; otherwise start with the recv node as
     // send node doesn't exist in last partition's forward pass.
-    Node* traverse_start_node = stage < send_nodes.size() ? send_nodes[stage] : recv_nodes.back();
+    // Note: weights are sent while executing the forward computation, so we always use the forward send and receive ops.
+    Node* traverse_start_node = stage < send_nodes.size() - 1 ? send_nodes[stage].first : recv_nodes.back().first;
     ORT_RETURN_IF_ERROR(TraverseGraphWithConnectedElement(graph,
                                                           traverse_start_node,
                                                           visited_nodes,
@@ -1030,7 +1047,7 @@ common::Status HandleSharedInitializer(Graph& graph,
       std::vector<Node*> consumer_nodes = graph.GetMutableConsumerNodes(input->Name());
       std::vector<Node*> visited_consumer_nodes;
       for (auto consumer_node : consumer_nodes) {
-        if (visited_nodes.count(consumer_node) != 0) {
+        if (visited_nodes.count(consumer_node) != 0 && !IsBackward(*consumer_node)) {
           visited_consumer_nodes.push_back(consumer_node);
         }
       }
@@ -1058,10 +1075,18 @@ common::Status HandleSharedInitializer(Graph& graph,
   return Status::OK();
 }
 
+struct NodeArgComparator {
+  bool operator()(const NodeArg* lhs, const NodeArg* rhs) const {
+    return lhs->Name().compare(rhs->Name());
+  }
+};
+
+using NodeArgSet = std::set<const NodeArg*, NodeArgComparator>;
+
 // Returns all the pointers to NodeArg in the graph, before applying any
 // partition transformation.
-std::set<const NodeArg*> GetAllNodeArgs(const Graph& graph) {
-  std::set<const NodeArg*> initial_node_args;
+NodeArgSet GetAllNodeArgs(const Graph& graph) {
+  NodeArgSet initial_node_args;
   const auto& all_nodes = graph.Nodes();
   for (const auto& node : all_nodes) {
     const auto& node_outputs = node.OutputDefs();
@@ -1131,7 +1156,7 @@ common::Status AddMetaTensors(const int current_stage, const int next_stage,
 // and as outputs of the receive operator (recv_output_args) of the next stage.
 // Note that the received tensor will be a replica, i.e., stored in tensor_replicas.
 void SendProducedTensors(ONNX_NAMESPACE::AttributeProto& element_types,
-                         const std::set<const NodeArg*>& tensors_sent_in_forward,
+                         NodeArgSet& tensors_sent_in_forward,
                          std::vector<NodeArg*>& send_input_args,
                          std::vector<NodeArg*>& recv_output_args,
                          const std::map<const NodeArg*, std::vector<NodeArg*>>& tensor_replicas,
@@ -1157,11 +1182,11 @@ void SendProducedTensors(ONNX_NAMESPACE::AttributeProto& element_types,
 // (send_input_args) and as output of the receive operator of next_stage
 // (recv_output_args). Note that the sent/received tensors will be a replicas,
 // i.e., stored in tensor_replicas.
-// forwarded_tensors contans tensors that need to be sent from one device to the
-// other. For example,
+// forwarded_tensors contains tensors that need to be sent from a device to
+// another. For example,
 // forwarded_tensors[i] = {t, {stage of producer - s0, stage of the last consumer - s1}}
 // means that a tensor t, is produced in stage s0 and consumed for the last
-// time in stage s1, where s1 > s0 + 1. This tensor will be copied from stage
+// time in stage s1, where |s1 - s0| > 1. This tensor will be copied from stage
 // to stage until s1.
 void SendForwardedTensors(ONNX_NAMESPACE::AttributeProto& element_types,
                           std::vector<NodeArg*>& send_input_args,
@@ -1180,6 +1205,10 @@ void SendForwardedTensors(ONNX_NAMESPACE::AttributeProto& element_types,
       continue;
     }
 
+    if (next_stage < std::min(start, end) || next_stage > std::max(start, end)) {
+      continue;
+    }
+
     if (start == end) {
       continue;  // Nothing else to do.
     }
@@ -1187,8 +1216,10 @@ void SendForwardedTensors(ONNX_NAMESPACE::AttributeProto& element_types,
     NodeArg* replica = tensor_replicas.at(tensor).at(current_stage);
     NodeArg* next_replica = tensor_replicas.at(tensor).at(next_stage);
 
-    ORT_ENFORCE(replica != nullptr && next_replica != nullptr,
-                "Couldn't find replicas of tensor " + tensor->Name());
+    ORT_ENFORCE(replica != nullptr, "Couldn't find replica of tensor ",
+                tensor->Name(), " in current stage ", current_stage, " ", next_stage);
+    ORT_ENFORCE(next_replica != nullptr, "Couldn't find replicas of tensor ",
+                tensor->Name(), " in next stage ", current_stage, " ", next_stage);
     if (!std::count(send_input_args.begin(), send_input_args.end(), replica)) {
       send_input_args.push_back(replica);
       recv_output_args.push_back(next_replica);
@@ -1199,11 +1230,9 @@ void SendForwardedTensors(ONNX_NAMESPACE::AttributeProto& element_types,
     if (start < end) {
       // Forwarding in forward stage of pipeline
       range.first = start + 1;
+    } else if (start > end) {
+      range.first = start - 1;
     }
-    // TODO(jufranc): Forwarding in backward stage of pipeline.
-    // else if (start > end) {
-    //   range.first = start - 1;
-    // }
   }
 }
 
@@ -1282,11 +1311,17 @@ void CreateTensorReplica(Graph& graph,
 // stage 1 to stage 2, and so on. Once we allow partition after AD, or more
 // general forms of partition, this vector will contain other pairs of stages.
 //   - send_nodes: a container for the Send nodes we add to the graph. E.g,
-// send_nodes[i] represents the sending of tensors from stage i to stage i+1 and
-// belongs to the partition i.
-//   - receive_nodes: a container for the Recv nodes we add to the graph. E.g.,
-// receive_nodes[i] represents the receiving of tensors from stage i in stage
-// i+1 and belongs to the partition i+1.
+// send_nodes[i] contains a pair of Sends, where the first element represents
+// the sending of tensors from stage i to stage i+1 during execution of forward
+// computation, and the second element the sending of tensors from stage i to
+// stage i-1 during the execution of backward computation. Both nodes belong to
+// the partition i.
+//   - receive_nodes: a container for the Receives nodes we add to the graph.
+// E.g, receive_nodes[i] contains a pair of Receives, where the first element
+// represents the receving of tensors from stage i-1 in stage i during execution
+// of forward computation, and the second element the receiving of tensors from
+// stage i to i+1 in i during the execution of backward computation. Both nodes
+// belong to the partition i.
 //   - stage_to_rank: a mapping between stage id and rank id. This is needed
 // because one stage may be composed of 2 ranks (due to horizontal parallelism).
 //
@@ -1311,15 +1346,18 @@ common::Status SplitGraphWithOperatorToStageMap(Graph& graph,
                                                 const std::map<const Node*, int>& op_to_stage,
                                                 const int num_stages,
                                                 const std::vector<std::pair<int, int>>& messages,
-                                                std::vector<Node*>& send_nodes,
-                                                std::vector<Node*>& receive_nodes,
+                                                std::vector<std::pair<Node*, Node*>>& send_nodes,
+                                                std::vector<std::pair<Node*, Node*>>& receive_nodes,
                                                 const std::vector<int>& stage_to_rank) {
-  // forward_messages stores all the tensors that will be sent by any stage.
-  // For example, forward_messages[s] is a set of all the tensors sent by stage
-  // s while executing the forward computation.
-  std::vector<std::set<const NodeArg*>> forward_messages(num_stages);
-  // TODO(jufranc): once we start using this function on the training graph,
-  // we need to keep backward_messages[s] too.
+  // forward_messages stores all the tensors that will be sent by any stage,
+  // during forward computation. For example, forward_messages[s] is the set of
+  // all the tensors sent by stage s while executing the forward computation.
+  std::vector<NodeArgSet> forward_messages(num_stages);
+  // backward_messages stores all the tensors that will be sent by any stage,
+  // during backward computation. For example, backward_messages[s] is the set
+  // of all the tensors sent by stage s while executing the backward computation.
+  // This may be empty, if the graph is forward only.
+  std::vector<NodeArgSet> backward_messages(num_stages);
 
   // Tensors that need to be sent from one device to the other. For example,
   // forwarded_tensors[i] = {t, {stage of producer - s0, stage of the last consumer - s1}}
@@ -1356,6 +1394,7 @@ common::Status SplitGraphWithOperatorToStageMap(Graph& graph,
 
     // This is only handling forwarding in the forward part of the graph.
     int last_consumer_stage_forward = -1;
+    int last_consumer_stage_backward = INT_MAX;
     for (const Node* consumer : consumers) {
       const auto found_stage = op_to_stage.find(consumer);
       assert(found_stage != op_to_stage.end());
@@ -1368,7 +1407,7 @@ common::Status SplitGraphWithOperatorToStageMap(Graph& graph,
       if (!IsBackward(const_cast<Node&>(*producer_node)) &&
           IsBackward(const_cast<Node&>(*consumer))) {
         // They must be on the same device.
-        ORT_ENFORCE(producer_stage == consumer_stage,
+        ORT_ENFORCE(producer_stage == consumer_stage || consumer_stage == num_stages - 1,
                     "Forward producer and backward consumer of a tensor must be in the same device.");
       }
 
@@ -1378,25 +1417,17 @@ common::Status SplitGraphWithOperatorToStageMap(Graph& graph,
       // to know where are the last consumers of a tensor.
       if (IsForwardComputation(producer_stage, consumer_stage)) {
         last_consumer_stage_forward = std::max(last_consumer_stage_forward, consumer_stage);
+      } else if (IsBackwardComputation(producer_stage, consumer_stage)) {
+        last_consumer_stage_backward = std::min(last_consumer_stage_backward, consumer_stage);
       }
-      ORT_ENFORCE(!IsBackwardComputation(producer_stage, consumer_stage),
-                  "Forwarding backward tensors not supported yet: ", producer_stage, "->", consumer_stage);
-      // TODO(jufranc): we will need something like the following, where
-      // else if (IsBackwardComputation(producer_stage, consumer_stage)) {
-      //  last_consumer_stage_backward is init to INT_MAX, for training graphs.
-      //  last_consumer_stage_backward = std::min(last_consumer_stage_backward, consumer_stage);
-      // }
 
       // Find which tensors need to be sent to the next stage (if it is a forward
       // message).
       if (producer_stage + 1 == consumer_stage) {
         forward_messages.at(producer_stage).insert(node_arg);
+      } else if (producer_stage - 1 == consumer_stage) {
+        backward_messages.at(producer_stage).insert(node_arg);
       }
-      // TODO(jufranc): find which tensors need to be sent to the previous stage
-      // (if it is a backward message). Something like:
-      // else if (producer_stage - 1 == consumer_stage) {
-      //   backward_messages.at(producer_stage).insert(node_arg);
-      // }
     }
 
     // Create all the replicas for this tensor now. We also keep track of which
@@ -1411,11 +1442,15 @@ common::Status SplitGraphWithOperatorToStageMap(Graph& graph,
         forwarded_tensors.push_back({node_arg,
                                      {producer_stage, last_consumer_stage_forward}});
       }
+    } else if (IsBackwardComputation(producer_stage, last_consumer_stage_backward)) {
+      for (int r = producer_stage - 1; r >= last_consumer_stage_backward; --r) {
+        CreateTensorReplica(graph, tensor_replicas, node_arg, r);
+      }
+      if (producer_stage - last_consumer_stage_backward > 1) {
+        forwarded_tensors.push_back({node_arg,
+                                    {producer_stage, last_consumer_stage_backward}});
+      }
     }
-    // TODO(jufranc): take care of IsBackwardComputation case.
-    ORT_ENFORCE(last_consumer_stage_forward == -1 ||
-                    !IsBackwardComputation(producer_stage, last_consumer_stage_forward),
-                "Backward tensors (", node_arg->Name(), ") cannot be replicated yet");
   }
 
   std::vector<std::string> new_input_names;
@@ -1449,12 +1484,11 @@ common::Status SplitGraphWithOperatorToStageMap(Graph& graph,
 
     // Get all the node_args that need to be sent to the next stage.
     auto& tensors_sent_in_forward = forward_messages.at(current_stage);
-    // TODO(jufranc): consider tensors sent by backward ops.
-    // auto& tensors_sent_in_backward = backward_messages.at(current_stage);
-    // auto& tensors_sent = current_stage + 1 == next_stage ? tensors_sent_in_forward : tensors_sent_in_backward;
+    auto& tensors_sent_in_backward = backward_messages.at(current_stage);
+    auto& tensors_sent = current_stage + 1 == next_stage ? tensors_sent_in_forward : tensors_sent_in_backward;
 
     // Take care of tensors that need to be sent from one device to the other.
-    SendProducedTensors(element_types, tensors_sent_in_forward, send_input_args,
+    SendProducedTensors(element_types, tensors_sent, send_input_args,
                         recv_output_args, tensor_replicas, next_stage);
 
     // Take care of tensors that need to be forwarded.
@@ -1472,14 +1506,15 @@ common::Status SplitGraphWithOperatorToStageMap(Graph& graph,
     attributes[element_types.name()] = element_types;
 
     // Add pair of Send/Receive nodes.
+    std::string description = IsBackwardComputation(current_stage, next_stage) ? "Backward pass" : "";
     auto& send_node = graph.AddNode(graph.GenerateNodeName("Send"),
-                                    "Send", "", send_input_args,
+                                    "Send", description, send_input_args,
                                     send_output_args, /* output */
                                     &attributes,      /* attribute */
                                     kMSDomain);
 
     auto& receive_node = graph.AddNode(graph.GenerateNodeName("Recv"),
-                                       "Recv", "", recv_input_args,
+                                       "Recv", description, recv_input_args,
                                        recv_output_args, /* output */
                                        &attributes,      /* attribute */
                                        kMSDomain);
@@ -1487,14 +1522,12 @@ common::Status SplitGraphWithOperatorToStageMap(Graph& graph,
     ORT_ENFORCE(current_stage != next_stage,
                 "Stage cannot send message to itself.");
     if (current_stage < next_stage) {
-      send_nodes.at(current_stage) = &send_node;
-      receive_nodes.at(next_stage - 1) = &receive_node;
+      send_nodes.at(current_stage).first = &send_node;
+      receive_nodes.at(next_stage).first = &receive_node;
+    } else if (current_stage > next_stage) {
+      send_nodes.at(current_stage).second = &send_node;
+      receive_nodes.at(next_stage).second = &receive_node;
     }
-    // TODO(jufranc): consider backward sends and receives.
-    // else if (current_stage > next_stage) {
-    //   send_nodes[current_stage].second = &send_node;
-    //   receive_nodes[next_stage].second = &receive_node;
-    // }
   }
 
   ORT_RETURN_IF_ERROR(SetInputsOutputsAndResolve(graph, {} /* weights_to_train*/,
@@ -1511,25 +1544,36 @@ common::Status SplitGraphWithOperatorToStageMap(Graph& graph,
 // topological order. Finally, remove Receive nodes that do not belong to the
 // `pipeline_stage_id` partition. At this point, they don't have outgoing
 // edges either.
+// TODO(jufranc): describe send_nodes and recv_nodes data structures.
+// The first Node* of the pair in send_nodes[s] is the Send from s to s+1,
+// i.e., the send for the forward stage. The second is the Send from s to 
+// s-1, i.e., the send for the backward stage. 
 void GenerateSubgraph(Graph& graph, const int num_stages,
                       const std::map<const Node*, int>& op_to_stage,
                       int pipeline_stage_id,
-                      std::vector<Node*>& send_nodes,
-                      std::vector<Node*>& recv_nodes,
+                      std::vector<std::pair<Node*, Node*>>& send_nodes,
+                      std::vector<std::pair<Node*, Node*>>& recv_nodes,
                       const std::vector<NodeIndex>& node_topology_list,
                       std::set<const NodeArg*>& visited_outputs) {
-  for (int s = 0; s < num_stages - 1; ++s) {
+  
+  // First, remove the Send operators that do not belong to this stage.
+  for (int s = 0; s < num_stages; ++s) {
     if (s == pipeline_stage_id) {
-      continue;  // These sends must be kept.
+      continue;  // Sends in pipeline_stage_id must be kept.
     }
-    Node* forward_send = send_nodes.at(s);
-    ORT_ENFORCE(forward_send);
-    graph.RemoveNode(forward_send->Index());
-    // TODO(jufranc): once we enable partition of training graphs, we need to
-    // remove the backward sends too.
+    auto& pair = send_nodes.at(s);
+    // Remove forward send.
+    Node* forward_send = pair.first;
+    if (forward_send != nullptr)
+      graph.RemoveNode(forward_send->Index());
+    // Remove backward send.
+    Node* backward_send = pair.second;
+    if (backward_send != nullptr)
+      graph.RemoveNode(backward_send->Index());
   }
 
-  // Collect all outputs of this partition too.
+  // Second, remove all operators that do not belong to this stage. Collect all
+  // outputs of this partition too.
   for (auto it = node_topology_list.rbegin(); it != node_topology_list.rend(); ++it) {
     NodeIndex ni = *it;
     const auto found = op_to_stage.find(graph.GetNode(ni));
@@ -1549,16 +1593,21 @@ void GenerateSubgraph(Graph& graph, const int num_stages,
     }
   }
 
-  for (int s = 0; s < num_stages - 1; ++s) {
-    if (s == pipeline_stage_id - 1) {
+  // Third, remove all the Receive operators that do not belong to this stage.
+  for (int s = 0; s < num_stages; ++s) {
+    if (s == pipeline_stage_id) {
       // These receives must be kept.
       continue;
     }
-    Node* forward_recv = recv_nodes.at(s);
-    ORT_ENFORCE(forward_recv);
-    graph.RemoveNode(forward_recv->Index());
-    // TODO(jufranc): once we enable partition of training graphs, we need to
-    // remove the backward sends too.
+    auto& pair = recv_nodes.at(s);
+    // Remove forward receive.
+    Node* forward_recv = pair.first;
+    if (forward_recv != nullptr)
+      graph.RemoveNode(forward_recv->Index());
+    // Remove backward receive.
+    Node* backward_recv = pair.second;
+    if (backward_recv != nullptr)
+      graph.RemoveNode(backward_recv->Index());
   }
 }
 
@@ -1566,43 +1615,41 @@ Status ApplyPipelinePartitionToMainGraph(Graph& graph,
                                          const std::map<const Node*, int>& op_to_stage,
                                          const int pipeline_stage_id,
                                          const int num_stages,
-                                         const std::vector<int32_t>& rank_ids) {
-  // TODO(jufranc): in order to support more general pipeline shapes, we need to
-  // do some analysis on the graph and assignment of operators to stages, to
-  // find which messages will be sent. For now, we assume that 1) there are
-  // always tensors being copied from stage s to s+1. Moreover, once we support
-  // partition of training graphs, we need to let tensors be copied from s+1 to
-  // s, as well.
+                                         const std::vector<int32_t>& rank_ids,
+                                         const bool is_training_graph) {
+  // TODO: in order to support more general pipeline shapes, we need to do some
+  // analysis on the graph and assignment of operators to stages, to find which
+  // messages will be sent. For now, we assume that 1) there are always tensors
+  // being copied from stage s to s+1 (for forward computation) and from s+1 to
+  // s (for backward computation).
   std::vector<int> stage_to_rank(num_stages);
-  ORT_ENFORCE(static_cast<int>(rank_ids.size()) == num_stages);
+  ORT_ENFORCE(static_cast<int>(rank_ids.size()) == num_stages,
+              "Expected ", num_stages, " but instead got ", rank_ids.size());
   std::vector<std::pair<int, int>> messages;
   for (int s = 0; s < num_stages - 1; ++s) {
     messages.emplace_back(s, s + 1);
     stage_to_rank.at(s) = rank_ids.at(s);
   }
   stage_to_rank.at(num_stages - 1) = rank_ids.at(num_stages - 1);
+  if (is_training_graph) {
+    for (int s = num_stages - 1; s > 0; --s) {
+      messages.emplace_back(s, s-1);
+    }
+  }
 
   // Get the nodes in topological order before spliting the graph.
   // This ordering will be useful later to remove nodes from the partition.
   GraphViewer graph_viewer(graph);
   const auto& node_topology_list = graph_viewer.GetNodesInTopologicalOrder();
 
-  // send_nodes[s] is the Send node that copies tensors from stage s to stage s+1.
-  // The last stage will not send anything.
-  std::vector<Node*> send_nodes(num_stages - 1);
-  // recv_nodes[s] is the Recv node that receives the replicas of tensors from
-  // stage s, i.e., it is allocated to stage s+1.
-  // The first stage does not receive anything.
-  std::vector<Node*> recv_nodes(num_stages - 1);
-
-  // TODO(jufranc): once we allow partition of training graphs, we need to keep
-  // send and receive nodes for the backward computation. We can then use the
-  // following type.
-  // std::vector<std::pair<Node*, Node*>> send_nodes(num_stages);
-  // std::vector<std::pair<Node*, Node*>> recv_nodes(num_stages);
-  // The first Node* of the pair in send_nodes[s] is the Send from s to s+1,
-  // i.e., the send for the forward stage. The second is the Send from s to
-  // s-1, i.e., the send for the backward stage.
+  // Because we allow partition of training graphs, we need to keep send and
+  // receive nodes for the forward and backward computations. We use the 
+  // following two data structures to keep these nodes. In particular, the first
+  // Node* of the pair in send_nodes[s] is the Send from s to s+1 (i.e., the
+  // send for the forward stage), the second is the Send from s to s-1 (i.e., 
+  // the send for the backward stage, and similiarly for recv_nodes[s].
+  std::vector<std::pair<Node*, Node*>> send_nodes(num_stages);
+  std::vector<std::pair<Node*, Node*>> recv_nodes(num_stages);
 
   // Split the graph into disconnected sub-graphs given the mapping of
   // operations to stages.
@@ -1623,9 +1670,28 @@ Status ApplyPipelinePartitionToMainGraph(Graph& graph,
   graph.SetGraphProtoSyncNeeded();
   graph.Resolve();
 
-  // TODO(jufranc): once we allow partition of training graphs, we need to add
-  // some code to make sure that the backward receive starts after the forward
-  // send, or otherwise the computation will get stuck.
+  if (!is_training_graph) {
+    // In that case, we are done here. The remaining work is only needed when
+    // partitioning training graphs.
+    return Status::OK();
+  }
+
+  if (pipeline_stage_id < num_stages - 1) {
+    // We need to make sure that the backward receive starts after the forward
+    // send, or otherwise the computation will get stuck. We can do this by 
+    // adding a data dependency between those two nodes.
+    auto forward_send = send_nodes.at(pipeline_stage_id).first;
+    auto backward_recv = recv_nodes.at(pipeline_stage_id).second;
+    ORT_ENFORCE(forward_send != nullptr, 
+                "Something went wrong. Can't find fwd send in rank " +
+                std::to_string(pipeline_stage_id));
+    ORT_ENFORCE(backward_recv != nullptr,
+                "Something went wrong. Can't find bwd recv in rank " + 
+                std::to_string(pipeline_stage_id));
+
+    auto& send_outputs = forward_send->MutableOutputDefs();
+    SetDataDependency(graph, *backward_recv, send_outputs);
+  }
 
   return Status::OK();
 }
@@ -1635,17 +1701,33 @@ Status ApplyPipelinePartitionToMainGraph(Graph& graph,
 //   - stages[i] is the stage id assigned to the operator with Index() == i.
 //   - num_stages is the total number of stages.
 //   - graph is the graph being partitioned into multiple pipeline stages.
-Status VerifyAssignment(const std::vector<int>& stages,
-                        const int num_stages,
-                        const Graph& graph) {
-  // All stages are used.
+// TODO(jufranc): update the documentation.
+Status VerifyAssignment(const Graph& graph,
+                        const std::map<const Node*, int>& op_to_stage,
+                        const int num_stages) {
+  const auto& nodes = graph.Nodes();
+  // First, we build an auxiliary vector of stages, where stages[i] contains the
+  // stage assigned to nodes[i] or -1 if nodes[i] has not been assigned a stage.
+  std::vector<int> stages(graph.NumberOfNodes(), -1);
+  int i = 0;
+  for (const auto& node : nodes) {
+    const auto found = op_to_stage.find(&node);
+    if (found != op_to_stage.end()) {
+      stages.at(i) = found->second;
+    }
+    i++;
+  }
+  
+  // All stages are used, i.e., for each stage s, there is at least one instance
+  // of s in stages.
   for (int s = 0; s < num_stages; ++s) {
     const auto stage_is_used = std::find(std::begin(stages), std::end(stages), s);
     ORT_RETURN_IF_NOT(stage_is_used != std::end(stages),
-                      "Stage " + std::to_string(s) + " was not assigned to any node.");
+                      "Stage ", s, " was not assigned to any node.");
   }
 
-  // All nodes have been assigned to a stage.
+  // All nodes have been assigned to a stage, i.e., there is not instance of -1
+  // in stages.
   const auto op_assigned = std::find(std::begin(stages), std::end(stages), -1);
   ORT_RETURN_IF_NOT(op_assigned == std::end(stages),
                     "All ops must be assigned to a stage");
@@ -1656,22 +1738,36 @@ Status VerifyAssignment(const std::vector<int>& stages,
                       "All stage ids must be in range.");
   }
 
-  // Edges always go forward.
-  for (size_t i = 0, t = graph.NumberOfNodes(); i < t; ++i) {
-    const Node* node = graph.GetNode(i);
-    const int node_stage = stages.at(i);
-    const auto& node_outputs = node->OutputDefs();
+  // Edges always go forward, i.e, for each tensor produced in the forward
+  // stages of this graph, the stage assigned to its producer is smaller/equal
+  // to the stage assigned to any of its consumers, and for each tensor producer
+  // equal to the stage assigned to any of its consumers.
+  for (const auto& producer : nodes) {
+    const int producer_stage = op_to_stage.at(&producer);
+    const auto& node_outputs = producer.OutputDefs();
     for (const NodeArg* arg : node_outputs) {
       if (arg == nullptr || !arg->HasTensorOrScalarShape() || !arg->Exists())
         continue;
-      auto cs = graph.GetConsumerNodes(arg->Name());
-      for (const Node* c : cs) {
-        const int outgoing_stage = stages.at(c->Index());
-        ORT_RETURN_IF_NOT(node_stage <= outgoing_stage, "node_stage > outgoing_stage");
+      const auto consumers = graph.GetConsumerNodes(arg->Name());
+      for (const Node* consumer : consumers) {
+        const int consumer_stage = op_to_stage.at(consumer);
+        if (!IsBackward(producer)) {
+          // If the producer is a forward node, then the consumer will be either
+          // forward or backward. Either way the stage of the consumer should be
+          // assigned to a later stage.
+          ORT_RETURN_IF_NOT(producer_stage <= consumer_stage,
+                            "Sending a tensor from stage ", producer_stage, " to ",
+                            consumer_stage, " during forward phase is not possible.");
+        } else {
+          // If the producer is a backward node, then the consumer will be a
+          // backward node as well and assigned to an earlier stage.
+          ORT_RETURN_IF_NOT(producer_stage >= consumer_stage,
+                            "Sending a tensor from stage ", producer_stage, " to ",
+                            consumer_stage, " during backward phase is not possible.");
+        }
       }
     }
   }
-
   return Status::OK();
 }
 
@@ -1679,28 +1775,30 @@ Status GetDeviceAssignmentMap(const Graph& graph,
                               const std::map<std::string, int>& id_to_stage,
                               std::map<const Node*, int>& op_to_stage,
                               const int num_stages) {
-  const int num_nodes = graph.NumberOfNodes();
-  std::vector<int> stages(num_nodes);
-  for (int i = 0; i < num_nodes; ++i) {
-    const Node* node = graph.GetNode(i);
+  const auto& all_nodes = graph.Nodes();
+  for (const auto& node : all_nodes) {
+    const auto& node_name = node.Name();
+    if (!node_name.empty() && id_to_stage.find(node_name) != id_to_stage.end()) {
+      int stage = id_to_stage.at(node_name);
+      op_to_stage.emplace(&node, stage);
+      continue;
+    }
     bool found = false;
-    const auto& node_outputs = node->OutputDefs();
+    const auto& node_outputs = node.OutputDefs();
     for (const NodeArg* arg : node_outputs) {
       if (id_to_stage.find(arg->Name()) != id_to_stage.end()) {
-        stages.at(i) = id_to_stage.at(arg->Name());
+        int stage = id_to_stage.at(arg->Name());
+        op_to_stage.emplace(&node, stage);
         found = true;
         break;
       }
     }
-    const std::string node_info = node->OpType() + "(" + node->Name() + ")";
+    const std::string node_info = node.OpType() + "(" + node.Name() + ")";
     ORT_RETURN_IF_NOT(found, "Can't find node's stage: ", node_info);
   }
 
-  ORT_RETURN_IF_ERROR(VerifyAssignment(stages, num_stages, graph));
+  ORT_RETURN_IF_ERROR(VerifyAssignment(graph, op_to_stage, num_stages));
 
-  for (int i = 0; i < num_nodes; ++i) {
-    op_to_stage.emplace(graph.GetNode(i), stages.at(i));
-  }
   return Status::OK();
 }
 
@@ -1846,11 +1944,11 @@ Status GetDeviceAssignmentMap(const Graph& graph,
         visit_and_assign(all_consumers.at(cid), cid + 1, stop_visit, stages));
   }
 
-  ORT_RETURN_IF_ERROR(VerifyAssignment(stages, num_cuts + 1, graph));
-
   for (size_t i = 0, t = graph.NumberOfNodes(); i < t; ++i) {
     op_to_stage.emplace(graph.GetNode(i), stages.at(i));
   }
+  
+  ORT_RETURN_IF_ERROR(VerifyAssignment(graph, op_to_stage, num_stages));
 
   return Status::OK();
 }
