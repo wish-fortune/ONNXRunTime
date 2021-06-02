@@ -103,6 +103,12 @@ else
         $GET_DOCKER_IMAGE_CMD --repository "onnxruntime-$IMAGE" \
             --docker-build-args="--build-arg BUILD_USER=onnxruntimedev --build-arg BUILD_UID=$(id -u) --build-arg PYTHON_VERSION=${PYTHON_VER} --build-arg OPENVINO_VERSION=${OPENVINO_VERSION}" \
             --dockerfile $DOCKER_FILE --context .
+    elif [ $BUILD_DEVICE = "openenclave" ]; then
+        IMAGE="$BUILD_OS-openenclave"
+        DOCKER_FILE=Dockerfile.ubuntu_openenclave       
+        $GET_DOCKER_IMAGE_CMD --repository "onnxruntime-$IMAGE" \
+            --docker-build-args="--build-arg BUILD_USER=onnxruntimedev --build-arg BUILD_UID=$(id -u) --build-arg PYTHON_VERSION=${PYTHON_VER}" \
+            --dockerfile $DOCKER_FILE --context .
     else
         IMAGE="$BUILD_OS"
         $GET_DOCKER_IMAGE_CMD --repository "onnxruntime-$IMAGE" \
@@ -123,7 +129,7 @@ if [ -z "$NIGHTLY_BUILD" ]; then
     set NIGHTLY_BUILD=0
 fi
 
-if [ $BUILD_DEVICE = "cpu" ] || [ $BUILD_DEVICE = "openvino" ] || [ $BUILD_DEVICE = "nnapi" ] || [ $BUILD_DEVICE = "arm" ]; then
+if [ $BUILD_DEVICE = "cpu" ] || [ $BUILD_DEVICE = "openvino" ] || [ $BUILD_DEVICE = "nnapi" ] || [ $BUILD_DEVICE = "arm" ] || [ $BUILD_DEVICE = "openenclave" ]; then
     RUNTIME=
 else
     RUNTIME="--gpus all"
@@ -138,6 +144,10 @@ DOCKER_RUN_PARAMETER="--name onnxruntime-$BUILD_DEVICE \
                       --volume $HOME/.onnx:/home/onnxruntimedev/.onnx"
 if [ $BUILD_DEVICE = "openvino" ] && [[ $BUILD_EXTR_PAR == *"--use_openvino GPU_FP"* ]]; then
     DOCKER_RUN_PARAMETER="$DOCKER_RUN_PARAMETER --device /dev/dri:/dev/dri"
+fi
+
+if [ $BUILD_DEVICE = "openenclave" ]; then
+    DOCKER_RUN_PARAMETER="$DOCKER_RUN_PARAMETER --device=/dev/sgx"
 fi
 
 $DOCKER_CMD rm -f "onnxruntime-$BUILD_DEVICE" || true

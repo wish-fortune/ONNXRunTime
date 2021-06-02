@@ -1,0 +1,8 @@
+jobs:
+- template: templates/linux-ci.yml
+  parameters:
+    AgentPool : 'Security-DC4S'
+    JobName: 'Linux_CI_Dev'
+    RunDockerBuildArgs: '-o ubuntu18.04 -d openenclave -r $(Build.BinariesDirectory) -x "--use_openenclave"'
+    DoNugetPack:  'false'
+    ArtifactName: 'drop-linux'

@@ -911,6 +911,11 @@ if(${CMAKE_SYSTEM_NAME} STREQUAL "iOS")
   )
 endif()
 
+if (onnxruntime_USE_OPENENCLAVE)
+  target_compile_definitions(onnxruntime_perf_test PRIVATE HAVE_OPENENCLAVE)
+  target_link_libraries(onnxruntime_perf_test PRIVATE onnxruntime_session_test_enclave_host onnxruntime_framework)
+endif()
+
 if (onnxruntime_BUILD_SHARED_LIB)
   set(onnxruntime_perf_test_libs
           onnx_test_runner_common onnxruntime_test_utils onnxruntime_common
