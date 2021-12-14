@@ -52,10 +52,10 @@ struct NodeComputeInfo {
 
 class IExecutionProvider {
  protected:
-  IExecutionProvider(const std::string& type, bool use_metadef_id_creator = false)
+  IExecutionProvider(const std::string& type, bool use_model_id_creator = false)
       : type_{type} {
-    if (use_metadef_id_creator) {
-      metadef_id_generator_ = std::make_unique<ModelMetadefIdGenerator>();
+    if (use_model_id_creator) {
+      model_id_generator_ = std::make_unique<ModelIdGenerator>();
     }
   }
 
@@ -261,6 +261,9 @@ class IExecutionProvider {
    */
   virtual int GenerateMetaDefId(const onnxruntime::GraphViewer& graph_viewer, uint64_t& model_hash) const;
 
+  //Generate a unique id for a model. Values are unique for a model instance. 
+  virtual int GenerateModelId(const onnxruntime::GraphViewer& graph_viewer, uint64_t& model_hash) const;
+
   /**
      Register allocators used for EP
      TODO: Used for CUDA & TRT only for now, will have one more PR to apply this for all EPs.
@@ -284,15 +287,19 @@ class IExecutionProvider {
 
   // helper to generate ids that are unique to model and deterministic, even if the execution provider is shared across
   // multiple sessions.
-  class ModelMetadefIdGenerator {
+  class ModelIdGenerator {
    public:
-    int GenerateId(const onnxruntime::GraphViewer& graph_viewer, uint64_t& model_hash);
+    // Generate unique id by hashing model path/name and nodes
+    // hash_model_name: true: hash model name; false: hash model path
+    // hash_nodes: true: hash graph inputs and nodes outputs; false: hash inputs/outputs only when model path is not 
+    // available
+    int GenerateId(const onnxruntime::GraphViewer& graph_viewer, uint64_t& model_hash, bool hash_model_name = false, bool hash_nodes = false);
 
    private:
     std::unordered_map<uint64_t, int64_t> main_graph_hash_;  // map graph instance hash to model contents hash
-    std::unordered_map<int64_t, int> model_metadef_id_;      // current unique id for model
+    std::unordered_map<int64_t, int> model_id_;      // current unique id for model
   };
 
-  std::unique_ptr<ModelMetadefIdGenerator> metadef_id_generator_;
+  std::unique_ptr<ModelIdGenerator> model_id_generator_;
 };
 }  // namespace onnxruntime

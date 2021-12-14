@@ -303,6 +303,10 @@ int IExecutionProvider::GenerateMetaDefId(const onnxruntime::GraphViewer& graph_
   return g_host->IExecutionProvider__GenerateMetaDefId(this, graph_viewer, model_hash);
 }
 
+int IExecutionProvider::GenerateModelId(const onnxruntime::GraphViewer& graph_viewer, uint64_t& model_hash) const {
+  return g_host->IExecutionProvider__GenerateModelId(this, graph_viewer, model_hash);
+}
+
 void IExecutionProvider::RegisterAllocator(std::shared_ptr<AllocatorManager> allocator_manager) {
   return g_host->IExecutionProvider__RegisterAllocator(this, allocator_manager);
 }

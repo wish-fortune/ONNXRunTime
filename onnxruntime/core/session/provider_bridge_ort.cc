@@ -273,6 +273,10 @@ struct ProviderHostImpl : ProviderHost {
     return p->IExecutionProvider::GenerateMetaDefId(graph_viewer, model_hash);
   }
 
+  int IExecutionProvider__GenerateModelId(const IExecutionProvider* p, const onnxruntime::GraphViewer& graph_viewer, uint64_t& model_hash) override {
+    return p->IExecutionProvider::GenerateModelId(graph_viewer, model_hash);
+  }
+
   void IExecutionProvider__RegisterAllocator(IExecutionProvider* p, std::shared_ptr<AllocatorManager> allocator_manager) override {
     return p->IExecutionProvider::RegisterAllocator(allocator_manager);
   }
