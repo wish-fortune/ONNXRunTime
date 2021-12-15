@@ -119,6 +119,10 @@ class Allocator;
 class ThreadPoolInterface;
 }  // namespace Eigen
 
+namespace mlas {
+class IThreadPool;
+}  // namespace mlas
+
 namespace onnxruntime {
 
 struct TensorOpCost {
@@ -137,6 +141,8 @@ class ExtendedThreadPoolInterface;
 class LoopCounter;
 class ThreadPoolParallelSection;
 
+class MlasThreadPoolAdapter;
+
 class ThreadPool {
  public:
 #ifdef _WIN32
@@ -144,6 +150,8 @@ class ThreadPool {
 #else
   using NAME_CHAR_TYPE = char;
 #endif
+  using MLAS_THREADPOOL_TYPE = mlas::IThreadPool;
+
   // Constructs a pool for running with with "degree_of_parallelism" threads with
   // specified "name". env->StartThread() is used to create individual threads
   // with the given ThreadOptions. If "low_latency_hint" is true the thread pool
@@ -365,6 +373,16 @@ class ThreadPool {
   static void StartProfiling(concurrency::ThreadPool* tp);
   static std::string StopProfiling(concurrency::ThreadPool* tp);
 
+  // convert to MLAS ThreadPool
+  inline static MLAS_THREADPOOL_TYPE* AsMlasThreadPool(concurrency::ThreadPool* tp)
+  {
+    if (tp != nullptr) {
+      return reinterpret_cast<MLAS_THREADPOOL_TYPE*>(tp->mlas_threadpool_adapter_.get());
+    } else {
+      return nullptr;
+    }
+  }
+
  private:
   friend class LoopCounter;
 
@@ -424,6 +442,8 @@ class ThreadPool {
 
   // If used, underlying_threadpool_ is instantiated and owned by the ThreadPool.
   std::unique_ptr<ThreadPoolTempl<Env> > extended_eigen_threadpool_;
+
+  std::unique_ptr<MlasThreadPoolAdapter> mlas_threadpool_adapter_;
 };
 
 }  // namespace concurrency

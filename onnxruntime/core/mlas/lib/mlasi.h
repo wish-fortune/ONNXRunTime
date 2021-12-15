@@ -886,7 +886,7 @@ MlasGetMaximumThreadCount(
     MLAS_UNREFERENCED_PARAMETER(ThreadPool);
     return 1;
 #else
-    return onnxruntime::concurrency::ThreadPool::DegreeOfParallelism(ThreadPool);
+    return MLAS_THREADPOOL::DegreeOfParallelism(ThreadPool);
 #endif
 }
 
