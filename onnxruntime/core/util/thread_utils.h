@@ -29,6 +29,9 @@ struct OrtThreadPoolParams {
   // Set or unset denormal as zero
   bool set_denormal_as_zero = false;
 
+  // Use lite version for intra ops
+  bool use_tplite = false;
+
   // members to manage custom threads
   OrtCustomCreateThreadFn custom_create_thread_fn = nullptr;
   void* custom_thread_creation_options = nullptr;

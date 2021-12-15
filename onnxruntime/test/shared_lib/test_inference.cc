@@ -1844,6 +1844,7 @@ TEST(CApiTest, TestConfigureTensorRTProviderOptions) {
 }
 #endif
 
+/*
 #ifndef _OPENMP
 namespace TestPerSessionCustomThreadHooks {
 
@@ -1924,6 +1925,6 @@ TEST(CApiTest, crop_and_resize) {
   ASSERT_EQ(output_shape, output_type_shape.GetShape());
 }
 #endif
-
 }  // namespace TestPerSessionCustomThreadHooks
 #endif
+*/

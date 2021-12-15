@@ -296,6 +296,7 @@ void InferenceSession::ConstructorCommon(const SessionOptions& session_options,
                              session_options_.execution_mode == ExecutionMode::ORT_SEQUENTIAL &&
                              to.affinity_vec_len == 0;
       to.allow_spinning = allow_intra_op_spinning;
+      to.use_tplite = session_options_.config_options.GetConfigOrDefault(kOrtSessionOptionsConfigUseTpLite, "0") =="1";
 
       // Set custom threading functions
       to.custom_create_thread_fn = session_options_.custom_create_thread_fn;
