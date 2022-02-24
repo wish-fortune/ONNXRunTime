@@ -589,12 +589,24 @@ void SetMaskNodesToRemove(const Graph& graph, AttentionMaskNodes& mask_nodes, st
 }
 
 void SetMaskNodesToRemove(const Graph&, AttentionMaskNodesDistilBert& mask_nodes, std::vector<NodeIndex>& nodes_to_remove) {
-  nodes_to_remove.push_back(mask_nodes.softmax->Index());
-  nodes_to_remove.push_back(mask_nodes.where->Index());
-  nodes_to_remove.push_back(mask_nodes.expand->Index());
-  nodes_to_remove.push_back(mask_nodes.reshape->Index());
-  nodes_to_remove.push_back(mask_nodes.equal->Index());
-  nodes_to_remove.push_back(mask_nodes.shape->Index());
+  if (mask_nodes.softmax != nullptr) {
+    nodes_to_remove.push_back(mask_nodes.softmax->Index());
+  }
+  if (mask_nodes.where != nullptr) {
+    nodes_to_remove.push_back(mask_nodes.where->Index());
+  }
+  if (mask_nodes.expand != nullptr) {
+    nodes_to_remove.push_back(mask_nodes.expand->Index());
+  }
+  if (mask_nodes.reshape != nullptr) {
+    nodes_to_remove.push_back(mask_nodes.reshape->Index());
+  }
+  if (mask_nodes.equal != nullptr) {
+    nodes_to_remove.push_back(mask_nodes.equal->Index());
+  }
+  if (mask_nodes.shape != nullptr) {
+    nodes_to_remove.push_back(mask_nodes.shape->Index());
+  }
 }
 
 /**  Match Input Mask subgraph:
@@ -737,23 +749,32 @@ bool MatchInputMaskSubgraph(const Graph& graph, const Node& layer_norm, const No
       {0, 0, "Reshape", {1, 5, 13}, kOnnxDomain},
       {0, 0, "Equal", {1, 7, 11, 13}, kOnnxDomain}};
 
+  std::vector<graph_utils::EdgeEndToMatch> mask_path_1{ // add cast operator for mask path
+      {0, 0, "Softmax", {1, 11, 13}, kOnnxDomain},
+      {0, 0, "Where", {9}, kOnnxDomain},
+      {0, 0, "Cast", {1, 6, 9, 13}, kOnnxDomain},
+      {0, 0, "Expand", {8, 13}, kOnnxDomain},
+      {0, 0, "Reshape", {1, 5, 13}, kOnnxDomain},
+      {0, 0, "Equal", {1, 7, 11, 13}, kOnnxDomain}};
+  std::vector<graph_utils::EdgeEndToMatch> mask_path_2{ // add path for fused where
+      {0, 0, "Softmax", {1, 11, 13}, kOnnxDomain},
+      {0, 0, "Where", {9}, kOnnxDomain},
+      {0, 2, "MatMul", {1, 9, 13}, kOnnxDomain}
+  };
+
   std::vector<const Node::EdgeEnd*> edges;
-  if (!graph_utils::FindPath(qkv_matmul, true, mask_path, edges, logger)) {
+  if (!graph_utils::FindPath(qkv_matmul, true, mask_path, edges, logger) &&
+      !graph_utils::FindPath(qkv_matmul, true, mask_path_1, edges, logger) &&
+      !graph_utils::FindPath(qkv_matmul, true, mask_path_2, edges, logger)) {
     DEBUG_LOG("Failed to find mask path");
     return false;
   }
 
   const Node& softmax = edges[0]->GetNode();
   const Node& where = edges[1]->GetNode();
-  const Node& expand = edges[2]->GetNode();
-  const Node& reshape = edges[3]->GetNode();
-  const Node& equal = edges[4]->GetNode();
 
   if (!optimizer_utils::CheckOutputEdges(graph, softmax, 1) ||
-      !optimizer_utils::CheckOutputEdges(graph, where, 1) ||
-      !optimizer_utils::CheckOutputEdges(graph, expand, 1) ||
-      !optimizer_utils::CheckOutputEdges(graph, reshape, 1) ||
-      !optimizer_utils::CheckOutputEdges(graph, equal, 1)) {
+      !optimizer_utils::CheckOutputEdges(graph, where, 1)) {
     DEBUG_LOG("Output edge count not expected for mask nodes");
     return false;
   }
@@ -766,6 +787,28 @@ bool MatchInputMaskSubgraph(const Graph& graph, const Node& layer_norm, const No
   //check where has X=-Infinity
   if (!optimizer_utils::IsInitializerWithExpectedValue(graph, *(where.InputDefs()[1]), -INFINITY, true)) {
     DEBUG_LOG("where const not matched.");
+    return false;
+  }
+
+  if (edges.size() == 3)
+  {
+    result.softmax = &softmax;
+    result.where = &where;
+    result.expand = nullptr;
+    result.reshape = nullptr;
+    result.equal = nullptr;
+    result.shape = nullptr;
+    return true;
+  }
+
+  const Node& expand = edges[edges.size() - 3]->GetNode();
+  const Node& reshape = edges[edges.size() - 2]->GetNode();
+  const Node& equal = edges[edges.size() - 1]->GetNode();
+
+  if (!optimizer_utils::CheckOutputEdges(graph, expand, 1) ||
+      !optimizer_utils::CheckOutputEdges(graph, reshape, 1) ||
+      !optimizer_utils::CheckOutputEdges(graph, equal, 1)) {
+    DEBUG_LOG("Output edge count not expected for mask nodes");
     return false;
   }
 
@@ -1103,11 +1146,11 @@ bool CheckNodesInPathV(const Graph& graph, const Node& reshape, const Node& tran
   std::vector<int64_t> v_reshape_shape;
   if (!optimizer_utils::AppendTensorFromInitializer(graph, *(v_reshape.InputDefs()[1]), v_reshape_shape) ||
       v_reshape_shape.size() != 4 ||
-      v_reshape_shape[0] != 0 ||
-      (v_reshape_shape[1] != 0 && v_reshape_shape[1] != -1) ||  //v_reshape_shape[1] != -1 added for supporting distilbert
+      (v_reshape_shape[0] == -1 && v_reshape_shape[1] == -1) ||  //first two shape values cannot all be -1, support for real shapes, like (16, 512, 12, 64)
       v_reshape_shape[2] <= 0 ||
       v_reshape_shape[2] > hidden_size ||
       (head_size < 0 && v_reshape_shape[3] != -1) ||
+      (v_reshape_shape[3] != -1 && v_reshape_shape[2] * v_reshape_shape[3] != hidden_size) ||  //v_reshape_shape[2] * v_reshape_shape[3] == hidden_size
       (head_size == 0 && v_reshape_shape[2] * v_reshape_shape[3] != hidden_size)) {
     DEBUG_LOG("v_reshape initializer value is not expected");
     return false;
@@ -1129,8 +1172,7 @@ bool CheckNodesInPathV(const Graph& graph, const Node& reshape, const Node& tran
   }
 
   if (reshape_shape.size() != 3 ||
-      reshape_shape[0] != 0 ||
-      (reshape_shape[1] != 0) ||
+      (reshape_shape[0] == -1 && reshape_shape[1] == -1) ||  //first two shape values cannot all be -1, support for real shapes
       (reshape_shape[2] != num_heads * head_size && reshape_shape[2] != -1)) {
     DEBUG_LOG("reshape initializer value is not expected");
     return false;
@@ -1154,8 +1196,9 @@ bool CheckNodesInPathQ(const Graph& graph, const Node& qk_div, const Node& q_res
   std::vector<int64_t> q_reshape_shape;
   if (!optimizer_utils::AppendTensorFromInitializer(graph, *(q_reshape.InputDefs()[1]), q_reshape_shape) ||
       q_reshape_shape.size() != 4 ||
-      q_reshape_shape[0] != 0 ||
-      (q_reshape_shape[1] != 0 && q_reshape_shape[1] != -1) ||  //q_reshape_shape[1] != -1 added for supporting distilbert
+      (q_reshape_shape[0] == -1 && q_reshape_shape[1] == -1) ||  //first two shape values cannot all be -1, support for real shapes
+      //q_reshape_shape[0] != 0 ||
+      //(q_reshape_shape[1] != 0 && q_reshape_shape[1] != -1) ||  //q_reshape_shape[1] != -1 added for supporting distilbert
       q_reshape_shape[2] != num_heads ||
       q_reshape_shape[3] != head_size) {
     DEBUG_LOG("q_reshape const not matched");
@@ -1202,8 +1245,7 @@ bool CheckNodesInPathK(const Graph& graph, const Node& k_reshape, const Node& k_
   std::vector<int64_t> k_reshape_shape;
   if (!optimizer_utils::AppendTensorFromInitializer(graph, *(k_reshape.InputDefs()[1]), k_reshape_shape) ||
       k_reshape_shape.size() != 4 ||
-      k_reshape_shape[0] != 0 ||
-      (k_reshape_shape[1] != 0 && k_reshape_shape[1] != -1) ||  //k_reshape_shape[1] != -1 added for supporting distilbert
+      (k_reshape_shape[0] == -1 && k_reshape_shape[1] == -1) ||  //first two shape values cannot all be -1, support for real shapes
       k_reshape_shape[2] != num_heads ||
       k_reshape_shape[3] != head_size) {
     DEBUG_LOG("k_reshape const not matched");
