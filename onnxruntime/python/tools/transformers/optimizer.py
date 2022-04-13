@@ -23,7 +23,7 @@ import os
 import argparse
 from typing import Dict, Optional
 from onnx import load_model, ModelProto
-from onnx_model_bart import BartOnnxModel
+from onnx_model_bart import BartOnnxModel, Wav2vec2OnnxModel
 from onnx_model_bert import BertOnnxModel
 from onnx_model_bert_tf import BertOnnxModelTF
 from onnx_model_bert_keras import BertOnnxModelKeras
@@ -42,6 +42,7 @@ MODEL_TYPES = {
     "gpt2": (Gpt2OnnxModel, "pytorch", 1),
     "gpt2_tf": (Gpt2OnnxModel, 'tf2onnx', 0),  # might add a class for GPT2OnnxModel for TF later.
     "tnlr": (TnlrOnnxModel, "pytorch", 1),
+    "wav2vec2": (Wav2vec2OnnxModel, "pytorch", 1),
 }
 
 
