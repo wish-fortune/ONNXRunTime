@@ -283,6 +283,7 @@ TensorrtExecutionProvider::TensorrtExecutionProvider(const TensorrtExecutionProv
       engine_decryption_lib_path_ = info.engine_decryption_lib_path;
     }
     force_sequential_engine_build_ = info.force_sequential_engine_build;
+    cuda_graph_enable_ = info.cuda_graph_enable;
   } else {
     const std::string max_partition_iterations_env = onnxruntime::GetEnvironmentVar(tensorrt_env_vars::kMaxPartitionIterations);
     if (!max_partition_iterations_env.empty()) {
@@ -367,6 +368,11 @@ TensorrtExecutionProvider::TensorrtExecutionProvider(const TensorrtExecutionProv
     if (!force_sequential_engine_build_env.empty()) {
       force_sequential_engine_build_ = (std::stoi(force_sequential_engine_build_env) == 0 ? false : true);
     }
+
+    const std::string cuda_graph_enable_env = onnxruntime::GetEnvironmentVar(tensorrt_env_vars::kCUDAGraphEnable);
+    if (!cuda_graph_enable_env.empty()) {
+      cuda_graph_enable_ = (std::stoi(cuda_graph_enable_env) == 0 ? false : true);
+    }
   }
 
   // Validate setting
@@ -430,7 +436,8 @@ TensorrtExecutionProvider::TensorrtExecutionProvider(const TensorrtExecutionProv
                         << ", trt_cache_path: " << cache_path_
                         << ", trt_engine_decryption_enable: " << engine_decryption_enable_
                         << ", trt_engine_decryption_lib_path: " << engine_decryption_lib_path_
-                        << ", trt_force_sequential_engine_build: " << force_sequential_engine_build_;
+                        << ", trt_force_sequential_engine_build: " << force_sequential_engine_build_
+                        << ", trt_cuda_graph_enable: " << cuda_graph_enable_;
 }
 
 TensorrtExecutionProvider::~TensorrtExecutionProvider() {
@@ -1003,7 +1010,11 @@ TensorrtExecutionProvider::GetCapability(const GraphViewer& graph,
 
 common::Status TensorrtExecutionProvider::Compile(const std::vector<Node*>& fused_nodes,
                                                   std::vector<NodeComputeInfo>& node_compute_funcs) {
-  for (const auto* fused_node : fused_nodes) {
+  size_t fused_nodes_size = fused_nodes.size();
+  std::vector<std::unique_ptr<cudaGraphExec_t>> executable_cuda_graphs(fused_nodes_size);
+  for (size_t node_idx = 0; node_idx < fused_nodes_size; node_idx++) {
+    executable_cuda_graphs[node_idx] = std::make_unique<cudaGraphExec_t>();
+    const auto* fused_node = fused_nodes[node_idx];
     // Build map from input name to its index in input definitions
     std::unordered_map<std::string, size_t> input_map;
     const auto& input_defs = fused_node->InputDefs();
@@ -1251,6 +1262,7 @@ common::Status TensorrtExecutionProvider::Compile(const std::vector<Node*>& fuse
     contexts_.emplace(fused_node->Name(), std::move(trt_context));
     builders_.emplace(fused_node->Name(), std::move(trt_builder));
     networks_.emplace(fused_node->Name(), std::move(trt_network));
+    executable_cuda_graph_map_.emplace(fused_node->Name(), std::move(executable_cuda_graphs[node_idx]));
     input_info_[fused_node->Name()].push_back(input_indexes);
     output_info_[fused_node->Name()].push_back(output_indexes);
     output_info_[fused_node->Name()].push_back(output_types);
@@ -1265,8 +1277,9 @@ common::Status TensorrtExecutionProvider::Compile(const std::vector<Node*>& fuse
             &engines_[context->node_name], &contexts_[context->node_name], &builders_[context->node_name],
             &networks_[context->node_name], input_info_[context->node_name], output_info_[context->node_name],
             input_shape_ranges_[context->node_name], &tensorrt_mu_, fp16_enable_, int8_enable_, int8_calibration_cache_available_,
-            dla_enable_, dla_core_, &max_workspace_size_, trt_node_name_with_precision, engine_cache_enable_, cache_path_,
-            runtime_.get(), nullptr, allocator_, dynamic_range_map, engine_decryption_enable_, engine_decryption_, engine_encryption_};
+            dla_enable_, dla_core_, cuda_graph_enable_, nullptr, &executable_cuda_graph_map_[context->node_name], &max_workspace_size_,
+            trt_node_name_with_precision, engine_cache_enable_, cache_path_, runtime_.get(), nullptr, allocator_,
+            dynamic_range_map, engine_decryption_enable_, engine_decryption_, engine_encryption_};
       *state = p.release();
       return 0;
     };
@@ -1289,6 +1302,8 @@ common::Status TensorrtExecutionProvider::Compile(const std::vector<Node*>& fuse
       auto trt_engine = trt_state->engine->get();
       auto trt_context = trt_state->context->get();
       auto trt_profile = &(trt_state->trt_profile);
+      auto cuda_graph_ptr = &(trt_state->cuda_graph_ptr);
+
       auto alloc = trt_state->scratch_allocator;
       int num_inputs = static_cast<int>(input_indexes.size());
       int num_outputs = static_cast<int>(output_indexes.size());
@@ -1850,10 +1865,31 @@ common::Status TensorrtExecutionProvider::Compile(const std::vector<Node*>& fuse
         }
       }
 
-      // Run TRT inference
-      if (!trt_context->enqueueV2(&buffers[0], stream, nullptr)) {
-        return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "TensorRT EP execution context enqueue failed.");
-      }
+      // Run TRT inference			  
+      if (trt_state->cuda_graph_enable)
+      {
+          if (*cuda_graph_ptr == nullptr) {
+            std::unique_ptr<cudaGraph_t> graph = std::make_unique<cudaGraph_t>();
+            *cuda_graph_ptr = trt_state->executable_cuda_graph->get();
+            //warm up to avoid capturing initialization
+            if (!trt_context->enqueueV2(&buffers[0], stream, nullptr)) {
+              return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, 
+                                     "TensorRT engine has operations that are not allowed in CUDA graph capture mode. ",
+                                     "Please disable trt_cuda_graph_enable.");
+            }
+            CUDA_CALL_THROW(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+            if (!trt_context->enqueueV2(&buffers[0], stream, nullptr)) {
+              return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "TensorRT EP execution context enqueue failed.");
+            }
+            CUDA_CALL_THROW(cudaStreamEndCapture(stream, graph.get())); 
+            CUDA_CALL_THROW(cudaGraphInstantiate(*cuda_graph_ptr, *(graph.get()), NULL, NULL, 0));
+          }
+          cudaGraphLaunch(**cuda_graph_ptr, stream);
+      } else {
+        if (!trt_context->enqueueV2(&buffers[0], stream, nullptr)) {
+          return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "TensorRT EP execution context enqueue failed.");
+        }
+      } 
 
       // Cast INT64 input to INT32 because TensorRT doesn't fully support INT64
       for (size_t i = 0, end = output_binding_names.size(); i < end; ++i) {
