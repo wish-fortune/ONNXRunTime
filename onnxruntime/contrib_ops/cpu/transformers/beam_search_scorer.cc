@@ -26,11 +26,23 @@ BeamHypotheses::BeamHypotheses(int num_beams,
       early_stopping_(early_stopping),
       worst_score_(1e9),
       beams_(hypothesis_score_allocator) {
+  best_net_ = std::numeric_limits<float>::lowest();
 }
 
 void BeamHypotheses::Add(gsl::span<const int32_t>& hypothesis, float sum_logprobs) {
+  /* TODO
+   * Is the length_penalty_ needed for final hypothesus?
+   * Understand the repercussions of this. Can be made optional.
+   *
   auto length = hypothesis.size();
   float score = sum_logprobs / pow(static_cast<float>(length), length_penalty_);
+  */
+  float score = sum_logprobs;
+
+  // TODO decide if length_penalty really needed
+  if (length_penalty_ > 1.0) {
+    //Noop
+  }
 
   if (this->Size() < num_beams_ || score > worst_score_) {
     HypothesisScore item(hypothesis, score);
@@ -42,7 +54,78 @@ void BeamHypotheses::Add(gsl::span<const int32_t>& hypothesis, float sum_logprob
   }
 }
 
-bool BeamHypotheses::IsDone(float best_sum_logprobs, int current_length) {
+/* Returns int
+ *  1 -> terminate and add current beam
+ *  2 -> terminate and don't add current beam
+ *  0 -> don't terminate (updated the best ecs score)
+ */
+bool BeamHypotheses::IsEcsBetterThanLastIteration(ISequences* sequences,
+                                        int batch,
+                                        int initial_seq_length,
+                                        const int prefix_length,
+                                        int num_beams,
+                                        gsl::span<const int32_t>* ids2_len,
+                                        int min_chars,
+                                        float ecs_cost,
+                                        float log_prob_threshold,
+                                        gsl::span<const float>& next_scores,
+                                        gsl::span<const int32_t>& next_tokens) {
+  int max_index = 0;
+  float max_generated_net = std::numeric_limits<float>::lowest();
+
+  for (int i = 0; i < num_beams; i++) {
+    int batch_beam_idx = batch * num_beams + i; 
+    gsl::span<const int32_t> src = sequences->GetSequence(batch_beam_idx);
+
+    int generated_length = 0; 
+    for (int j = initial_seq_length; j < sequences->GetSequenceLength(); j++) {
+      generated_length = generated_length + (*ids2_len)[src[j]];
+    }
+
+    // Each beam would have 2 as internally we are extracting topK = 2* num_beams_
+    // Lets just do this top 1 beam because, we want only the best candidate.
+    for (int j = 0; j < 1; j++) {
+      int beam_idx = batch * 2 * num_beams + j;
+      int beam_generated_length = generated_length + (*ids2_len)[next_tokens[beam_idx]];
+      beam_generated_length = beam_generated_length - prefix_length;
+      float generated_net = std::numeric_limits<float>::lowest();;
+
+      if (beam_generated_length < min_chars) {
+        generated_net = std::numeric_limits<float>::lowest();
+      } else {
+        float generated_prob = exp(next_scores[beam_idx]);
+        float generated_ecs = beam_generated_length * generated_prob;
+        float generated_cost = beam_generated_length * ecs_cost;
+        generated_net = generated_ecs - generated_cost;
+      }
+
+#ifdef DEBUG_BEAM_SEARCH
+      std::cout<<"Generated net for beam:" << i <<", index:"<<j<<generated_net<<std::endl;
+#endif
+      // beam_generated_length is less than min_chars, it will always default to the first index, topK are sorted
+      // so that is OK. may be a better way to make sure it will find the maximum
+      if (generated_net > max_generated_net) {
+#ifdef DEBUG_BEAM_SEARCH
+        std::cout<<"generated_net:"<<generated_net<<", greater than max_generated_net:"<<max_generated_net<<std::endl;
+#endif
+        max_generated_net = generated_net;
+        max_index = beam_idx;
+      }
+    }
+  }
+
+  if (max_generated_net >= best_net_ && next_scores[max_index] >= log_prob_threshold) {
+#ifdef DEBUG_BEAM_SEARCH
+    std::cout<<"Updating best_net_ with:"<<max_generated_net<<std::endl;
+#endif
+    best_net_ = max_generated_net;
+    return false;
+  }
+
+  return true;
+}
+
+bool BeamHypotheses::IsDone(float best_sum_logprobs) {
   // If there are enough hypotheses and that none of the hypotheses being generated can become better
   // than the worst one in the heap, then we are done with this sentence.
 
@@ -52,8 +135,9 @@ bool BeamHypotheses::IsDone(float best_sum_logprobs, int current_length) {
   if (early_stopping_)
     return true;
 
-  float current_score = best_sum_logprobs / pow(static_cast<float>(current_length), length_penalty_);
-  return worst_score_ >= current_score;
+  // TODO this is not needed for original scores
+  //float current_score = best_sum_logprobs / pow(static_cast<float>(current_length), length_penalty_);
+  return worst_score_ >= best_sum_logprobs;
 }
 
 void BeamHypotheses::Output(
@@ -96,6 +180,9 @@ BeamSearchScorer::BeamSearchScorer(size_t batch_size,
                                    size_t num_return_sequences,
                                    int pad_token_id,
                                    int eos_token_id,
+                                   int ecs_min_chars,
+                                   float ecs_log_prob_threshold,
+                                   float ecs_cost,
                                    onnxruntime::OrtStlAllocator<HypothesisScore>& hypothesis_score_allocator,
                                    onnxruntime::OrtStlAllocator<BeamHypotheses>& beam_hyps_allocator)
     : batch_size_(batch_size),
@@ -104,6 +191,9 @@ BeamSearchScorer::BeamSearchScorer(size_t batch_size,
       num_beam_hyps_to_keep_(num_return_sequences),
       pad_token_id_(pad_token_id),
       eos_token_id_(eos_token_id),
+      ecs_min_chars_(ecs_min_chars),
+      ecs_log_prob_threshold_(ecs_log_prob_threshold),
+      ecs_cost_(ecs_cost),
       hypothesis_buffer_length_(0),
       hypothesis_buffer_offset_(0),
       beam_hyps_(beam_hyps_allocator) {
@@ -120,7 +210,10 @@ bool BeamSearchScorer::IsDone() {
   return true;
 }
 
-void BeamSearchScorer::Initialize(AllocatorPtr& allocator, int sequence_length) {
+void BeamSearchScorer::Initialize(AllocatorPtr& allocator,
+                                  int sequence_length,
+                                  gsl::span<const int32_t>& ids2_len,
+                                  gsl::span<const int32_t>& prefix_lens) {
   ORT_ENFORCE(next_beam_scores_.empty());  // Make sure this is called only once.
 
   size_t batch_beam_size = batch_size_ * num_beams_;
@@ -137,6 +230,10 @@ void BeamSearchScorer::Initialize(AllocatorPtr& allocator, int sequence_length) 
   size_t buffer_per_beam = (SafeInt<size_t>(max_length_) * (max_length_ + 1) - SafeInt<size_t>(sequence_length - 1) * sequence_length) / 2;
   hypothesis_buffer_length_ = batch_beam_size * buffer_per_beam;
   hypothesis_buffer_ = Allocate<int32_t>(allocator, hypothesis_buffer_length_, hypothesis_buffer_ptr_, no_fill);
+
+  ids2_len_ = &ids2_len;
+  prefix_lens_ = &prefix_lens;
+  intial_sequence_length_ = sequence_length;
 }
 
 void BeamSearchScorer::Process(ISequences* sequences,
@@ -154,6 +251,40 @@ void BeamSearchScorer::Process(ISequences* sequences,
 
   for (size_t batch = 0; batch < batch_size_; batch++) {
     BeamHypotheses& beam_hyp = beam_hyps_[batch];
+
+    // ecs_min_chars is never negative, using this to decide whether to call ECS
+    if (ecs_min_chars_ >= 0) {
+      bool done_here = beam_hyp.IsEcsBetterThanLastIteration(sequences,
+                                                             batch,
+                                                             intial_sequence_length_,
+                                                             (*prefix_lens_)[batch],
+                                                             num_beams_,
+                                                             ids2_len_,
+                                                             ecs_min_chars_,
+                                                             ecs_cost_,
+                                                             ecs_log_prob_threshold_,
+                                                             next_scores,
+                                                             next_tokens);
+
+      if (done_here) {
+        for (size_t beam = 0; beam < num_beams_; beam++) {
+          int batch_beam_idx = batch * num_beams_ + beam;
+
+          // Clone the sequence and append to buffer.
+          gsl::span<const int32_t> src = sequences->GetSequence(batch_beam_idx);
+          float score = sequences->GetSequenceScore(batch_beam_idx);
+
+          auto clone = hypothesis_buffer_.subspan(hypothesis_buffer_offset_, sequence_length);
+          gsl::copy(src, clone);
+          hypothesis_buffer_offset_ += static_cast<size_t>(sequence_length);
+          auto sequence = clone.template as_span<const int32_t>();
+
+          beam_hyp.Add(sequence, score);
+        }
+        done_[batch] = true;
+      }
+    }
+
     if (done_[batch]) {
       ORT_ENFORCE(beam_hyp.Size() >= gsl::narrow_cast<int>(num_beams_), "Batch can only be done if all beams have been generated");
 
@@ -202,6 +333,10 @@ void BeamSearchScorer::Process(ISequences* sequences,
         break;
     }
 
+#ifdef DEBUG_BEAM_SEARCH
+    std::cout<<"hypothesis_buffer_offset_: " <<hypothesis_buffer_offset_<<std::endl;
+    std::cout<<"batch_size_ * num_beams_ * max_length_:"<<batch_size_ * num_beams_ * max_length_<<std::endl;
+#endif
     ORT_ENFORCE(beam_idx == num_beams_);
     ORT_ENFORCE(hypothesis_buffer_offset_ <= batch_size_ * num_beams_ * max_length_);
 
@@ -209,7 +344,7 @@ void BeamSearchScorer::Process(ISequences* sequences,
     if (!done_[batch]) {
       gsl::span<const float> topk_scores = next_scores.subspan(batch * num_beams_, top_k);
       const float* best_sum_logprobs = std::max_element(topk_scores.begin(), topk_scores.end());
-      if (beam_hyp.IsDone(*best_sum_logprobs, sequence_length)) {
+      if (beam_hyp.IsDone(*best_sum_logprobs)) {
         done_[batch] = true;
       }
     }

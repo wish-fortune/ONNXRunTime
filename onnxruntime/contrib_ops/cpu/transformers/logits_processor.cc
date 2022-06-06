@@ -145,8 +145,10 @@ void VocabMaskLogitsProcessor<T>::Process(const ISequences* /*sequences*/,
 }
 
 template <typename T>
-PrefixVocabMaskLogitsProcessor<T>::PrefixVocabMaskLogitsProcessor(const gsl::span<const int32_t>& prefix_vocab_mask, int batch_size)
-    : prefix_vocab_mask_(prefix_vocab_mask), batch_size_(batch_size) {
+PrefixVocabMaskLogitsProcessor<T>::PrefixVocabMaskLogitsProcessor(const gsl::span<const int32_t>& prefix_vocab_mask, const gsl::span<const bool>& prefix_uppercase, int batch_size)
+    : prefix_vocab_mask_(prefix_vocab_mask), prefix_uppercase_(prefix_uppercase), batch_size_(batch_size) {
+    // TODO dw do this per model
+    deep_write_spl_tokens_ = 5;
 }
 
 template <typename T>
@@ -164,10 +166,22 @@ void PrefixVocabMaskLogitsProcessor<T>::Process(const ISequences* /*sequences*/,
   for (int i = 0; i < batch_size_; i++) {
     size_t prefix_vocab_mask_offset = SafeInt<size_t>(i) * next_token_scores.vocab_size;
     for (int j = 0; j < num_beams; j++) {
+      T max_value = std::numeric_limits<T>::lowest();
+      T* p1 = nullptr;
+      int max_index = -1;
       for (int k = 0; k < next_token_scores.vocab_size; k++, p++) {
         if (prefix_vocab_mask_[prefix_vocab_mask_offset + static_cast<size_t>(k)] == 0) {
+          if (!prefix_uppercase_.empty() && prefix_uppercase_[i] && *p > max_value) {
+            max_value = *p;
+            p1 = p;
+            max_index = k;
+          }
           *p = std::numeric_limits<T>::lowest();
         }
+      }
+
+      if (!prefix_uppercase_.empty() && prefix_uppercase_[i] && max_index >= next_token_scores.vocab_size - 1 - deep_write_spl_tokens_) {
+        *p1 = max_value; 
       }
     }
   }
@@ -196,7 +210,7 @@ void LogitsProcessorList::Init(const BeamSearchParameters& parameters) {
   }
 
   if (!parameters.prefix_vocab_mask.empty()) {
-    prefix_vocab_mask_processor_ = std::make_unique<PrefixVocabMaskLogitsProcessor<float>>(parameters.prefix_vocab_mask, parameters.batch_size);
+    prefix_vocab_mask_processor_ = std::make_unique<PrefixVocabMaskLogitsProcessor<float>>(parameters.prefix_vocab_mask, parameters.prefix_uppercase, parameters.batch_size);
     processor_list_.push_back(prefix_vocab_mask_processor_.get());
   }
 

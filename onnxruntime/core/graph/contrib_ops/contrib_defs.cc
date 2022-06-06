@@ -976,6 +976,12 @@ ONNX_MS_OPERATOR_SET_SCHEMA(BeamSearch, 1,
                                 .Input(7, "repetition_penalty", "The parameter for repetition penalty. Default value 1.0 means no penalty. Accepts value > 0.0. Shape is (1)", "T", OpSchema::Optional)
                                 .Input(8, "vocab_mask", "Mask of vocabulary. Words that masked with 0 are not allowed to be generated, and 1 is allowed. Shape is (vacab_size)", "M", OpSchema::Optional)
                                 .Input(9, "prefix_vocab_mask", "Mask of vocabulary for first step. Words that masked with 0 are not allowed to be generated, and 1 is allowed. Shape is (batch_size, vocab_size)", "M", OpSchema::Optional)
+                                .Input(10, "vocab_ids_len", "Tokenizer's vocab ids to len tensor. Shape is (vocab_size)", "M", OpSchema::Optional)
+                                .Input(11, "prefix_lens", "Prefix lengths. Shape is (batch_size)", "M", OpSchema::Optional)
+                                .Input(12, "ecs_min_chars", "minimum number of characters needed for expected character savings. Shape is (1)", "I", OpSchema::Optional)
+                                .Input(13, "ecs_log_prob_threshold", "minimum score required to qualify for best candidate. Shape is (1)", "T", OpSchema::Optional)
+                                .Input(14, "ecs_cost", "cost of expected character savings. Shape is (1)", "T", OpSchema::Optional)
+                                .Input(15, "prefix_uppercase", "tensor to indicate if the prefix is starting with upper case. shape is (batch_size)", "N", OpSchema::Optional)
                                 .Output(0, "sequences", "Word IDs of generated sequences. Shape is (batch_size, num_return_sequences, max_sequence_length)", "I")
                                 .Output(1, "sequences_scores", "Final beam score of the generated sequences. Shape is (batch_size, num_return_sequences)", "T", OpSchema::Optional)
                                 .Output(2, "scores",
@@ -986,6 +992,7 @@ ONNX_MS_OPERATOR_SET_SCHEMA(BeamSearch, 1,
                                 .TypeConstraint("T", {"tensor(float)"}, "Constrain input and output types to float tensors.")
                                 .TypeConstraint("I", {"tensor(int32)"}, "Constrain to integer types")
                                 .TypeConstraint("M", {"tensor(int32)"}, "Constrain mask to integer types")
+                                .TypeConstraint("N", {"tensor(bool)"}, "Constrain output 'mask' types to boolean tensors.")
                                 .TypeAndShapeInferenceFunction([](ONNX_NAMESPACE::InferenceContext& ctx) {
                                   BeamSearchShapeInference(ctx);
                                 }));
