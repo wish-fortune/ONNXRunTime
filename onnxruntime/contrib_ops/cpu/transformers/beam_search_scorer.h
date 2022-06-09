@@ -47,7 +47,19 @@ class BeamHypotheses {
   // Add a new hypothesis
   void Add(gsl::span<const int32_t>& hypothesis, float sum_logprobs);
 
-  bool IsDone(float best_sum_logprobs, int current_length);
+  bool IsDone(float best_sum_logprobs);
+
+  bool IsEcsBetterThanLastIteration(ISequences* sequences,
+                          int batch,
+                          int initial_seq_length,
+                          const int prefix_length,
+                          int num_beams,
+                          gsl::span<const int32_t>* ids2_len,
+                          int min_chars,
+                          float ecs_cost,
+                          float log_prob_threshold,
+                          gsl::span<const float>& next_scores,
+                          gsl::span<const int32_t>& next_tokens);
 
   // Output results. Note that it will clear all beams.
   void Output(int top_k,                            // number of sequences to return
@@ -60,6 +72,8 @@ class BeamHypotheses {
   float length_penalty_;
   bool early_stopping_;
   float worst_score_;
+  float best_net_;
+
   std::priority_queue<HypothesisScore, onnxruntime::FastAllocVector<HypothesisScore>, HypothesisScoreCompare> beams_;  // min-heap for top k
 };
 
@@ -73,10 +87,16 @@ class BeamSearchScorer : public IBeamScorer {
                    size_t num_return_sequences,
                    int pad_token_id,
                    int eos_token_id,
+                   int min_chars,
+                   float log_prob_threshold,
+                   float ecs_cost,
                    onnxruntime::OrtStlAllocator<HypothesisScore>& hypothesis_score_allocator,
                    onnxruntime::OrtStlAllocator<BeamHypotheses>& beam_hyps_allocator);
 
-  void Initialize(AllocatorPtr& allocator, int sequence_length) override;
+  void Initialize(AllocatorPtr& allocator,
+                  int sequence_length,
+                  gsl::span<const int32_t>& ids2_len,
+                  gsl::span<const int32_t>& prefix_lens) override;
 
   void Process(ISequences* sequences,
                gsl::span<const float>& next_scores,
@@ -101,6 +121,10 @@ class BeamSearchScorer : public IBeamScorer {
   size_t num_beam_hyps_to_keep_;
   int pad_token_id_;
   int eos_token_id_;
+  int ecs_min_chars_;
+  float ecs_log_prob_threshold_;
+  float ecs_cost_;
+  int intial_sequence_length_;
 
   IAllocatorUniquePtr<bool> done_ptr_;  // Allocated buffer for done_
   gsl::span<bool> done_;                // List of flags indicates whether each batch is finished or not. Its shape is (batch_size).
@@ -120,6 +144,8 @@ class BeamSearchScorer : public IBeamScorer {
   size_t hypothesis_buffer_offset_;                     // Offset of avaiable buffer, or length of used buffer.
 
   onnxruntime::FastAllocVector<BeamHypotheses> beam_hyps_;
+  gsl::span<const int32_t> *ids2_len_;
+  gsl::span<const int32_t> *prefix_lens_;
 };
 
 }  // namespace transformers
