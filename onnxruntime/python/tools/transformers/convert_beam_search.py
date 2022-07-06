@@ -294,6 +294,14 @@ def parse_arguments(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     test_group.set_defaults(save_test_data=False)
 
+    beam_search_group.add_argument(
+        "--custom_model",
+        required=False,
+        action="store_true",
+        help="Is this to target a beam search custom kernel, test would be skipped"
+    )
+    beam_search_group.set_defaults(custom_model=False)
+
     args = parser.parse_args(argv)
 
     return args
@@ -446,10 +454,13 @@ def verify_gpt2_subgraph(graph: onnx.GraphProto, precision: Precision):
         if i >= 3:
             expected_type = TensorProto.FLOAT16 if is_float16 else TensorProto.FLOAT
 
-        input_type = graph.input[i].type.tensor_type.elem_type
-        if input_type != expected_type:
-            raise ValueError(f"Input {i} is expected to have onnx data type {expected_type}. Got {input_type}")
-    logger.info("Verifying GPT-2 graph inputs: name and data type are good.")
+        if graph.input[i].type.tensor_type.elem_type != expected_type:
+            print(f"Input {i} is expected to have onnx data type {expected_type}. Got {graph.input[i].type.tensor_type.elem_type}")
+            # TODO Take out the cast nodes to int32 -> directly making them INT32
+            if i < 3:
+                graph.input[i].type.tensor_type.elem_type = onnx_proto.TensorProto.INT32
+
+    print("Verifying GPT-2 graph inputs: name and data type are good.")
 
     expected_outputs = ["logits"] + [f"present_{i}" for i in range(layer_count)]
     if len(graph.output) != len(expected_outputs):
@@ -767,9 +778,21 @@ def convert_model(args: argparse.Namespace):
     if args.verbose:
         logger.info(f"Config={config}")
 
-    eos_token_id = config.eos_token_id
-    pad_token_id = config.eos_token_id if is_gpt2 else config.pad_token_id
-    vocab_size = config.vocab_size
+    global config
+    if not args.custom_model:
+        if args.model_type == "gpt2":
+            config = GPT2Config.from_pretrained(args.model_name_or_path, cache_dir=args.cache_dir)
+        else:
+            config = T5Config.from_pretrained(args.model_name_or_path, cache_dir=args.cache_dir)
+
+            eos_token_id = config.eos_token_id
+            pad_token_id = config.eos_token_id
+            vocab_size = config.vocab_size
+    else:
+        # TODO Make them configurable
+        eos_token_id = 50256
+        pad_token_id = 50262
+    print(config)
 
     # if vocab_size is given in parameters use that.
     if args.vocab_size != -1:
@@ -782,6 +805,8 @@ def convert_model(args: argparse.Namespace):
         verify_gpt2_subgraph(decoder_model.graph, args.precision)
     else:
         verify_t5_decoder_subgraph(decoder_model.graph, args.precision)
+
+    onnx.save(model, "D:\\ai\\AI frameworks Team\\tasks\\deepwrite\\DeepWritev1\\DeepWrite\\model\\customop\\model\\DW6_multistream_fp32_opt2.onnx")
 
     inputs = [
         "input_ids",
@@ -811,24 +836,44 @@ def convert_model(args: argparse.Namespace):
         assert args.output_sequences_scores, "--output_token_scores requires --output_sequences_scores"
         outputs.append("scores")
 
-    node = onnx.helper.make_node(
-        "BeamSearch",
-        inputs=inputs,
-        outputs=outputs,
-        name=f"BeamSearch_{args.model_type}",
-    )
-    node.domain = "com.microsoft"
+    node = None
+    if args.custom_model:
+        '''TODO pass name of the OP as an argument'''
+        node = onnx.helper.make_node(
+            "CustomBeamsearchOp",
+            inputs=inputs,
+            outputs=outputs,
+            name=f"DeepwriteBeamSearch_{args.model_type}",
+        )
+    else:
+        node = onnx.helper.make_node(
+            "BeamSearch",
+            inputs=inputs,
+            outputs=outputs,
+            name=f"BeamSearch_{args.model_type}",
+        )
+
     node.attribute.extend(
         [
             onnx.helper.make_attribute("eos_token_id", eos_token_id),
             onnx.helper.make_attribute("pad_token_id", pad_token_id),
             onnx.helper.make_attribute("no_repeat_ngram_size", args.no_repeat_ngram_size),
-            onnx.helper.make_attribute("early_stopping", 1 if args.early_stopping else 0),
-            onnx.helper.make_attribute("model_type", 0 if args.model_type == "gpt2" else 1),
+            onnx.helper.make_attribute("early_stopping", 1 if args.early_stopping else 0)
         ]
     )
 
-    initializers = []
+    if args.custom_model:
+        node.domain = "test.beamsearchop"
+        node.attribute.append(onnx.helper.make_attribute("model_path", args.decoder_onnx))
+    else:
+        node.domain = "com.microsoft"
+        node.attribute.extend(
+            [
+                onnx.helper.make_attribute("decoder", model.graph),
+                onnx.helper.make_attribute("model_type", 0 if args.model_type == "gpt2" else 1)
+            ]
+        )
+
     if args.model_type in ["t5", "mt5"]:
         if args.run_shape_inference:
             logger.info(f"Symbolic shape inference on {args.encoder_decoder_init_onnx}. The file will be overwritten.")
@@ -1406,7 +1451,9 @@ def main(argv: Optional[List[str]] = None, sentences: Optional[List[str]] = None
 
     convert_model(args)
 
-    logger.info("start testing model...")
+    if args.custom_model:
+        return
+
     if args.model_type in ["t5", "mt5"]:
         result = test_t5_model(args, sentences=sentences)
     else:

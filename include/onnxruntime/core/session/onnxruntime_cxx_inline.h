@@ -1312,6 +1312,12 @@ inline void* CustomOpApi::KernelContext_GetGPUComputeStream(const OrtKernelConte
   return out;
 }
 
+inline void* CustomOpApi::KernelContext_GetThreadPool(const OrtKernelContext* context) {
+  void* out;
+  ThrowOnError(api_.KernelContext_GetThreadPool(context, &out));
+  return out;
+}
+
 inline OrtOpAttr* CustomOpApi::CreateOpAttr(_In_ const char* name,
                                             _In_ const void* data,
                                             _In_ int len,
@@ -1363,7 +1369,7 @@ inline OrtKernelInfo* CustomOpApi::CopyKernelInfo(_In_ const OrtKernelInfo* info
 
 inline void CustomOpApi::ReleaseKernelInfo(_Frees_ptr_opt_ OrtKernelInfo* info_copy) {
   api_.ReleaseKernelInfo(info_copy);
-} 
+}
 
 inline SessionOptions& SessionOptions::DisablePerSessionThreads() {
   ThrowOnError(GetApi().DisablePerSessionThreads(p_));
