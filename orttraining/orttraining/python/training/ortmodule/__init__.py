@@ -6,12 +6,14 @@
 import os
 import sys
 import warnings
+
 import torch
 from packaging import version
 
 from onnxruntime import set_seed
 from onnxruntime.capi import build_and_package_info as ort_info
-from ._fallback import _FallbackPolicy, ORTModuleFallbackException, ORTModuleInitException, wrap_exception
+
+from ._fallback import ORTModuleFallbackException, ORTModuleInitException, _FallbackPolicy, wrap_exception
 from .torch_cpp_extensions import is_installed as is_torch_cpp_extensions_installed
 
 
@@ -31,7 +33,8 @@ def _defined_from_envvar(name, default_value, warn=True):
 ################################################################################
 # All global constant goes here, before ORTModule is imported ##################
 # NOTE: To *change* values in runtime, import onnxruntime.training.ortmodule and
-# assign them new values. Importing them directly do not propagate changes.
+# assign them new values, or use the runtime_options option to ORTModule.
+# Importing them directly do not propagate changes.
 ################################################################################
 ONNX_OPSET_VERSION = 14
 MINIMUM_RUNTIME_PYTORCH_VERSION_STR = "1.8.1"
@@ -45,7 +48,6 @@ ORTMODULE_FALLBACK_POLICY = (
 )
 ORTMODULE_FALLBACK_RETRY = False
 ORTMODULE_IS_DETERMINISTIC = torch.are_deterministic_algorithms_enabled()
-
 ONNXRUNTIME_CUDA_VERSION = ort_info.cuda_version if hasattr(ort_info, "cuda_version") else None
 ONNXRUNTIME_ROCM_VERSION = ort_info.rocm_version if hasattr(ort_info, "rocm_version") else None
 
@@ -118,6 +120,8 @@ def _are_deterministic_algorithms_enabled():
     return ORTMODULE_IS_DETERMINISTIC
 
 
+from .debug_options import DebugOptions, LogLevel  # noqa: E402
+
 # ORTModule must be loaded only after all validation passes
 from .ortmodule import ORTModule  # noqa: E402
-from .debug_options import DebugOptions, LogLevel  # noqa: E402
+from .runtime_options import RuntimeOptions  # noqa: E402
