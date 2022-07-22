@@ -1,23 +1,20 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-#include "ort_eager_common.h"
+#include "orttraining/eager/ort_eager_common.h"
 
-#include "ort_backends.h"
-#include "ort_log.h"
+#include "orttraining/eager/ort_backends.h"
+#include "orttraining/eager/ort_log.h"
 
 namespace torch_ort {
 namespace eager {
 
-constexpr const char* kORTVirtualDeviceCount="ORT_VIRTUAL_DEVICE_COUNT";
+constexpr const char *kORTVirtualDeviceCount = "ORT_VIRTUAL_DEVICE_COUNT";
 
 struct ORTGuardImpl final : public c10::impl::DeviceGuardImplInterface {
-  ORTGuardImpl() {
-  }
+  ORTGuardImpl() {}
 
-  explicit ORTGuardImpl(at::DeviceType t) {
-    AT_ASSERT(t == at::DeviceType::ORT);
-  }
+  explicit ORTGuardImpl(at::DeviceType t) { AT_ASSERT(t == at::DeviceType::ORT); }
 
   at::DeviceType type() const override {
     ORT_LOG_FN();
@@ -70,33 +67,22 @@ struct ORTGuardImpl final : public c10::impl::DeviceGuardImplInterface {
     return ort_virtual_device_count.empty() ? 1 : std::stoi(ort_virtual_device_count);
   }
 
-//  #pragma region events
+  //  #pragma region events
 
-  #define EVENTS_NIEX TORCH_CHECK(false, "ORT backend doesn't support events.")
+#define EVENTS_NIEX TORCH_CHECK(false, "ORT backend doesn't support events.")
 
-  void record(void** event,
-    const at::Stream& stream,
-    const at::DeviceIndex device_index,
-    const at::EventFlag flag) const override {
+  void record(void **event, const at::Stream &stream, const at::DeviceIndex device_index,
+              const at::EventFlag flag) const override {
     EVENTS_NIEX;
   }
 
-  void block(
-    void* event,
-    const at::Stream& stream) const override {
-    EVENTS_NIEX;
-  }
+  void block(void *event, const at::Stream &stream) const override { EVENTS_NIEX; }
 
-  bool queryEvent(void* event) const override {
-    EVENTS_NIEX;
-  }
+  bool queryEvent(void *event) const override { EVENTS_NIEX; }
 
-  void destroyEvent(
-    void* event,
-    const at::DeviceIndex device_index) const noexcept override {
-  }
+  void destroyEvent(void *event, const at::DeviceIndex device_index) const noexcept override {}
 
-  #undef EVENTS_NIEX
+#undef EVENTS_NIEX
 
   //#pragma endregion events
 
@@ -110,5 +96,5 @@ thread_local std::map<at::DeviceIndex, at::StreamId> ORTGuardImpl::current_strea
 
 C10_REGISTER_GUARD_IMPL(ORT, ORTGuardImpl);
 
-} // namespace eager
-} // namespace torch_ort
+}  // namespace eager
+}  // namespace torch_ort

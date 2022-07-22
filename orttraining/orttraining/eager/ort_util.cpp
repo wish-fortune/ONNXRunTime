@@ -3,8 +3,8 @@
 
 #include <core/providers/cpu/cpu_execution_provider.h>
 
-#include "ort_util.h"
-#include "ort_backends.h"
+#include "orttraining/eager/ort_backends.h"
+#include "orttraining/eager/ort_util.h"
 
 namespace torch_ort {
 namespace eager {
@@ -19,5 +19,5 @@ onnxruntime::TensorShapeVector GetStrides(gsl::span<const int64_t> shape) {
   return strides;
 }
 
-} // namespace eager
-} // namespace torch_ort
+}  // namespace eager
+}  // namespace torch_ort
