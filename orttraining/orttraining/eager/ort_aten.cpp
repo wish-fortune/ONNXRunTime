@@ -292,6 +292,12 @@ bool IsSupportedType(c10::optional<int64_t> val, const std::vector<at::ScalarTyp
   return IsSupportedType(val.value(), valid_types);
 }
 
+bool IsSupportedType(const c10::optional<at::Tensor> val, const std::vector<at::ScalarType>& valid_types) {
+  if (val.has_value())
+    return IsSupportedType(val.value(), valid_types);
+  return true;
+}
+
 bool IsSupportedType(at::TensorList tensors, const std::vector<at::ScalarType>& valid_types) {
   return IsSupportedType(tensors[0], valid_types);
 }
@@ -1113,6 +1119,77 @@ at::Tensor& mm_out(
   return out;
 }
 
+
+// aten::nll_loss_forward.output(Tensor self, Tensor target, Tensor? weight, int reduction, int ignore_index, *, Tensor(a!) output, Tensor(b!) total_weight) -> (Tensor(a!), Tensor(b!))
+std::tuple<at::Tensor&, at::Tensor&> nll_loss_forward_output(
+  const at::Tensor& self,
+  const at::Tensor& target,
+  const c10::optional<at::Tensor>& weight,
+  int64_t reduction,
+  int64_t ignore_index,
+  // *,
+  at::Tensor& output,
+  at::Tensor& total_weight) {
+  ORT_LOG_FN(self, target, weight, reduction, ignore_index, output, total_weight);
+
+  std::cout <<"nll_loss_forward_output"<<std::endl;
+  if (
+    !IsSupportedType(self, {at::kDouble,at::kFloat,at::kHalf}) ||
+    !IsSupportedType(target, {at::kInt,at::kLong}) ||
+    !IsSupportedType(weight, {at::kDouble,at::kFloat,at::kHalf})) {
+    return at::native::call_fallback_fn<
+      &at::native::cpu_fallback,
+      ATEN_OP(nll_loss_forward_output)>::call(self, target, weight, reduction, ignore_index, output, total_weight);
+  }
+  auto& invoker = GetORTInvoker(self.device());
+
+  auto ort_input_0_self = create_ort_value(invoker, self);
+  auto ort_input_0_target = create_ort_value(invoker, target);
+  auto ort_input_0_weight = create_ort_value(invoker, weight);
+
+  NodeAttributes attrs_0(2);
+  attrs_0["ignore_index"] = create_ort_attribute(
+    "ignore_index", ignore_index, at::ScalarType::Long);
+  attrs_0["reduction"] = create_ort_attribute(
+    "reduction", reduction); //NOTES: tried at::ScalarType::Long
+
+  // resize the output and then create output ort value to be updated.
+  resize_output(invoker, dynamic_cast<ORTTensorImpl*>(output.unsafeGetTensorImpl()), {1,self.sizes()[1]});// NOTES:  need to take the second size
+  if(weight)
+    resize_output(invoker, dynamic_cast<ORTTensorImpl*>(total_weight.unsafeGetTensorImpl()), (*weight).sizes());
+  else
+    resize_output(invoker, dynamic_cast<ORTTensorImpl*>(total_weight.unsafeGetTensorImpl()), self.sizes()[1]);
+
+  auto ort_input_output = create_ort_value(invoker, output);
+  auto ort_input_total_weight = create_ort_value(invoker, total_weight);
+
+
+  std::vector<OrtValue> ort_outputs_0_NegativeLogLikelihoodLoss(1); ///NOTES- if (2)- gives me error- about the output size
+
+  auto status = invoker.Invoke("NegativeLogLikelihoodLoss", {
+    std::move(ort_input_0_self),
+    std::move(ort_input_0_target),
+    std::move(ort_input_0_weight),
+  }, ort_outputs_0_NegativeLogLikelihoodLoss, &attrs_0);
+  CHECK_STATUS(status); ///NOTES: with current code- generate Mismatched atrribute type for reduction.( I tried to change to LONG, INT,use string)
+
+
+  NodeAttributes attrs_1(1);
+  attrs_1["to"] = create_ort_attribute(
+    "to", GetONNXTensorProtoDataType(output.scalar_type()), at::ScalarType::Int);
+
+  std::vector<OrtValue> ort_outputs_1_Cast(2);
+  ort_outputs_1_Cast[0] = ort_input_output;
+  ort_outputs_1_Cast[1] = ort_input_total_weight;
+
+  status = invoker.Invoke("Cast", {
+    std::move(ort_outputs_0_NegativeLogLikelihoodLoss[0]),std::move(ort_outputs_0_NegativeLogLikelihoodLoss[1])}, ort_outputs_1_Cast, &attrs_1);
+  CHECK_STATUS(status);
+
+  //at::TensorOptions tensor_options = self.options();
+  //return std::make_tuple(aten_tensor_from_ort(std::move(ort_outputs_1_Cast[0]),tensor_options),aten_tensor_from_ort(std::move(ort_outputs_1_Cast[1]),tensor_options));
+  return {output, total_weight};
+}
 }  // namespace aten
 
 // #pragma endregion
