@@ -8,6 +8,7 @@ SET TargetFramework=netcoreapp5.0
 SET TargetArch=x64
 SET dn="C:\Program Files\dotnet\dotnet"
 SET CurrentOnnxRuntimeVersion=""
+SET ORT_CSHARP_TEST_ONNX_MODEL_ROOT_PATH=%OnnxRuntimeBuildDirectory%\models
 
 SET LocalNuGetRepo=%1
 IF NOT "%2"=="" (SET TargetFramework=%2)
@@ -54,7 +55,7 @@ dir test\Microsoft.ML.OnnxRuntime.EndToEndTests\packages\
 
 IF "%PACKAGENAME%"=="Microsoft.ML.OnnxRuntime.Gpu" (
   set TESTONGPU=ON
-  %dn% test -p:DefineConstants=USE_TENSORRT test\Microsoft.ML.OnnxRuntime.EndToEndTests\Microsoft.ML.OnnxRuntime.EndToEndTests.csproj --no-restore --filter TensorRT 
+  %dn% test -p:DefineConstants=USE_TENSORRT test\Microsoft.ML.OnnxRuntime.EndToEndTests\Microsoft.ML.OnnxRuntime.EndToEndTests.csproj --no-restore --filter TensorRT
 
   IF NOT errorlevel 0 (
     @echo "Failed to build or execute the end-to-end test"
