@@ -286,5 +286,10 @@ void TVM_VM_Run(TvmModule& mod)
   run("main");
 }
 
+std::string TVM_VM_GetHash(TvmModule& mod) {
+  TvmPackedFunc get_hash = mod.GetFunction("get_hash", false);
+  return get_hash();
+}
+
 }  // namespace tvm
 }  // namespace onnxruntime

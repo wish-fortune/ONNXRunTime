@@ -30,6 +30,7 @@ namespace tvm {
                           TVMTensorShapes& output_shapes);
   void TVMRun(TvmModule& mod);
   void TVM_VM_Run(TvmModule& mod);
+  std::string TVM_VM_GetHash(TvmModule& mod);
 
 }  // namespace tvm
 }  // namespace onnxruntime

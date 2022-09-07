@@ -17,9 +17,7 @@
 #include "tvm_allocator.h"  // NOLINT(build/include_subdir)
 #include "tvm_utils.h"  // NOLINT(build/include_subdir)
 #include "tvm_api.h"  // NOLINT(build/include_subdir)
-#ifdef USE_TVM_HASH
 #include "hash_alg/hasher.h"  // NOLINT(build/include_subdir)
-#endif
 
 using ONNX_NAMESPACE::TensorShapeProto;
 
@@ -109,17 +107,34 @@ common::Status TvmSoExecutionProvider::Compile(const std::vector<FusedNodeAndGra
   for (auto& fused_node_graph : fused_nodes_and_graphs) {
     const GraphViewer& graph_body_viewer = fused_node_graph.filtered_graph;
     const Node& fused_node = fused_node_graph.fused_node;
-#ifdef USE_TVM_HASH
-    if (options_.check_hash) {
-      ORT_ENFORCE(checkHash(ToUTF8String(fused_node.ModelPath().ToPathString())),
-                  "Hash check shows that used tuning files were not obtained for the given onnx-model");
-    }
-#endif
     const std::string func_name = fused_node.Name();
+
+    // Handshake mechanism stage 1
+    bool hash_match = false;
+    std::string onnx_model_hash;
+    if (options_.check_hash) {
+      std::string hash_path = ToUTF8String(fused_node.ModelPath().ToPathString());
+      if (hash_path.empty()) {
+        std::string onnx_model_str;
+        GetONNXModelSerializedString(graph_body_viewer, onnx_model_str);
+        onnx_model_hash = GetONNXModelHash(onnx_model_str);
+        onnx_model_str.clear();
+      } else {
+        onnx_model_hash = GetONNXModelHashFromPath(hash_path);
+      }
+
+      hash_match = checkHashFromFile(onnx_model_hash);
+    }
 
     compilers_[func_name] = std::make_shared<TVMSoCompiler>();
     InputsInfoMap all_input_shapes;
     auto mod = compileModel(func_name, graph_body_viewer, all_input_shapes);
+
+    // Handshake mechanism stage 2
+    if (options_.check_hash && !hash_match) {
+      ORT_ENFORCE(onnx_model_hash == TVM_VM_GetHash(*mod),
+        "Hash check shows that used tuning files were not obtained for the given onnx-model");
+    }
 
     std::vector<DLTensor> output_tensors(graph_body_viewer.GetOutputs().size());
     prepareOutputTensors(output_tensors);
@@ -154,22 +169,34 @@ void TvmSoExecutionProvider::printOptions() {
   LOGS(*GetLogger(), INFO) << options_;
 }
 
-#ifdef USE_TVM_HASH
-bool TvmSoExecutionProvider::checkHash(const std::string& onnx_path) const {
-  auto hasher = Hasher("sha256");
-  std::string onnx_str = readFromFile(onnx_path);
-  std::string onnx_hash = hasher.hash(onnx_str.c_str(), onnx_str.size());
-  onnx_str.clear();
-  std::string hash;
-  if (options_.hash_file_path.empty()) {
-    // TODO(vvchernov): align hash file name with OctoML team
-    hash = readFromFile(options_.so_folder + "/hash.txt");
-  } else {
-    hash = readFromFile(options_.hash_file_path);
-  }
-  return onnx_hash == hash;
+std::string TvmSoExecutionProvider::GetONNXModelHashFromPath(const std::string& onnx_path) const {
+  return GetONNXModelHash(readFromFile(onnx_path));
 }
-#endif
+
+std::string TvmSoExecutionProvider::GetONNXModelHash(const std::string& onnx_str) const {
+  auto hasher = Hasher("sha256");
+  return hasher.hash(onnx_str.c_str(), onnx_str.size());
+}
+
+void TvmSoExecutionProvider::GetONNXModelSerializedString(const GraphViewer& graph_body_viewer,
+                                                          std::string& dst_str) const {
+  Model model(graph_body_viewer.Name(), true, ModelMetaData(), PathString(),
+              IOnnxRuntimeOpSchemaRegistryList(), graph_body_viewer.DomainToVersionMap(),
+              std::vector<ONNX_NAMESPACE::FunctionProto>(), *GetLogger());
+  ONNX_NAMESPACE::ModelProto model_proto = model.ToProto();
+  model_proto.SerializeToString(&dst_str);
+}
+
+bool TvmSoExecutionProvider::checkHashFromFile(const std::string& onnx_hash) const {
+  std::string file_path = options_.hash_file_path;
+  if (file_path.empty()) {
+    file_path = options_.so_folder + "/hash.txt";
+  }
+  if (!IsFileExists(file_path)) {
+    return false;
+  }
+  return onnx_hash == readFromFile(file_path);
+}
 
 std::shared_ptr<TvmModule> TvmSoExecutionProvider::compileModel(const std::string& func_name,
                                                                 const GraphViewer& graph_viewer,
