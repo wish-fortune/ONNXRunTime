@@ -272,7 +272,12 @@ static Node* PlaceNode(Graph& graph, const IndexedSubGraph& capability,
   return result;
 }
 
-// for the current EP, recursively iterate through the Graph and any nested subgraphs (recursion is bottom-up).
+
+static Status NodePlacementAndCompile() {
+  return Status::OK();
+}
+
+    // for the current EP, recursively iterate through the Graph and any nested subgraphs (recursion is bottom-up).
 // assign any nodes to the EP that are currently unassigned, and that the EP can handle.
 static Status PartitionOnnxFormatModelImpl(Graph& graph, FuncManager& func_mgr,
                                            KernelRegistryManager& kernel_registry_mgr,
@@ -315,6 +320,14 @@ static Status PartitionOnnxFormatModelImpl(Graph& graph, FuncManager& func_mgr,
   if (capabilities.empty()) {
     return Status::OK();
   }
+
+  if (current_ep.CompileBeforeOptimization()) {
+    NodePlacementAndCompile();
+  }
+
+  /*
+    Wrap all logics below this point into <NodePlacementAndCompile> method.
+  */
 
   const std::string& type = current_ep.Type();
   auto fusion_style = current_ep.GetFusionStyle();
@@ -667,6 +680,15 @@ Status GraphPartitioner::Partition(Graph& graph, FuncManager& func_mgr,
 
   return Status::OK();
 }
+
+Status GraphPartitioner::FuseAfterTransform(Graph& graph, FuncManager& func_mgr,
+    TransformLayoutFunction transform_layout_function, Mode mode,
+    std::unordered_map<std::string, HashValue>* compiled_kernel_hashes) const {
+
+
+    return NodePlacementAndCompile();
+}
+
 }  // namespace onnxruntime
 
 #endif  // !defined(ORT_MINIMAL_BUILD) || defined(ORT_EXTENDED_MINIMAL_BUILD)
