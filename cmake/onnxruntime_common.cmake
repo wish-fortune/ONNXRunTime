@@ -98,7 +98,7 @@ if (onnxruntime_USE_MIMALLOC)
     if(onnxruntime_USE_CUDA OR onnxruntime_USE_OPENVINO)
         message(WARNING "Currently do not support MIMALLOC in GPU builds")
     else()
-        include(external/mimalloc.cmake)
+        include(mimalloc)
         list(APPEND onnxruntime_EXTERNAL_LIBRARIES mimalloc-static)
         list(APPEND onnxruntime_EXTERNAL_DEPENDENCIES mimalloc-static)
         set(onnxruntime_mimalloc_shim_src "${ONNXRUNTIME_ROOT}/core/platform/windows/mimalloc/mimalloc_overloads.cc")
@@ -109,7 +109,7 @@ if (onnxruntime_USE_MIMALLOC)
 endif()
 
 if(NOT onnxruntime_DISABLE_ABSEIL)
-  include(external/abseil-cpp.cmake)
+  include(abseil-cpp)
   target_include_directories(onnxruntime_common PRIVATE ${ABSEIL_SOURCE_DIR})
   if (MSVC)
     set(ABSEIL_NATVIS_FILE "abseil-cpp.natvis")
@@ -130,12 +130,12 @@ target_include_directories(onnxruntime_common
 target_link_libraries(onnxruntime_common safeint_interface Boost::mp11)
 
 if(NOT WIN32)
-  target_include_directories(onnxruntime_common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/external/nsync/public")
+  target_include_directories(onnxruntime_common PUBLIC "${PROJECT_SOURCE_DIR}/cmake/external/nsync/public")
 endif()
 
 add_dependencies(onnxruntime_common ${onnxruntime_EXTERNAL_DEPENDENCIES})
 
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/common  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/onnxruntime/core/common  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core)
 set_target_properties(onnxruntime_common PROPERTIES LINKER_LANGUAGE CXX)
 set_target_properties(onnxruntime_common PROPERTIES FOLDER "ONNXRuntime")
 

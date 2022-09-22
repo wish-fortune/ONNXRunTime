@@ -612,7 +612,7 @@ if(MSVC)
 else()
   target_compile_definitions(onnxruntime_test_utils PUBLIC -DNSYNC_ATOMIC_CPP11)
   target_include_directories(onnxruntime_test_utils PRIVATE ${CMAKE_CURRENT_BINARY_DIR} ${ONNXRUNTIME_ROOT}
-          "${CMAKE_CURRENT_SOURCE_DIR}/external/nsync/public")
+          "${PROJECT_SOURCE_DIR}/cmake/external/nsync/public")
 endif()
 if (onnxruntime_USE_NCCL)
   target_include_directories(onnxruntime_test_utils PRIVATE ${NCCL_INCLUDE_DIRS})
@@ -645,7 +645,7 @@ if(MSVC)
 else()
   target_compile_definitions(onnx_test_runner_common PUBLIC -DNSYNC_ATOMIC_CPP11)
   target_include_directories(onnx_test_runner_common PRIVATE ${CMAKE_CURRENT_BINARY_DIR} ${ONNXRUNTIME_ROOT}
-          "${CMAKE_CURRENT_SOURCE_DIR}/external/nsync/public")
+          "${PROJECT_SOURCE_DIR}/cmake/external/nsync/public")
 endif()
 if (MSVC AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   #TODO: fix the warnings, they are dangerous
@@ -791,7 +791,7 @@ endif()
 onnxruntime_add_include_to_target(onnx_test_data_proto onnx_proto)
 target_include_directories(onnx_test_data_proto PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 set_target_properties(onnx_test_data_proto PROPERTIES FOLDER "ONNXRuntimeTest")
-onnxruntime_protobuf_generate(APPEND_PATH IMPORT_DIRS external/onnx TARGET onnx_test_data_proto)
+onnxruntime_protobuf_generate(APPEND_PATH IMPORT_DIRS cmake/external/onnx TARGET onnx_test_data_proto)
 
 #
 # onnxruntime_ir_graph test data
@@ -962,9 +962,9 @@ if (NOT onnxruntime_ENABLE_TRAINING_TORCH_INTEROP)
 
   if (NOT onnxruntime_REDUCED_OPS_BUILD AND NOT onnxruntime_BUILD_WEBASSEMBLY)
     add_test(NAME onnx_test_pytorch_converted
-      COMMAND onnx_test_runner ${PROJECT_SOURCE_DIR}/external/onnx/onnx/backend/test/data/pytorch-converted)
+      COMMAND onnx_test_runner ${PROJECT_SOURCE_DIR}/cmake/external/onnx/onnx/backend/test/data/pytorch-converted)
     add_test(NAME onnx_test_pytorch_operator
-      COMMAND onnx_test_runner ${PROJECT_SOURCE_DIR}/external/onnx/onnx/backend/test/data/pytorch-operator)
+      COMMAND onnx_test_runner ${PROJECT_SOURCE_DIR}/cmake/external/onnx/onnx/backend/test/data/pytorch-operator)
   endif()
 
   if (CMAKE_SYSTEM_NAME STREQUAL "Android")
@@ -1294,7 +1294,7 @@ if (NOT onnxruntime_ENABLE_TRAINING_TORCH_INTEROP)
           -DBIN_DIR=${CMAKE_CURRENT_BINARY_DIR}
           -DREPO_ROOT=${REPO_ROOT}
           ${ORT_PROVIDER_FLAGS}
-          -P ${CMAKE_CURRENT_SOURCE_DIR}/onnxruntime_java_unittests.cmake)
+          -P ${PROJECT_SOURCE_DIR}/cmake/onnxruntime_java_unittests.cmake)
       else()
         add_custom_command(TARGET custom_op_library POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:custom_op_library>
                         ${JAVA_NATIVE_TEST_DIR}/$<TARGET_LINKER_FILE_NAME:custom_op_library>)
@@ -1338,4 +1338,4 @@ if (NOT onnxruntime_MINIMAL_BUILD AND NOT onnxruntime_EXTENDED_MINIMAL_BUILD
   endif()
 endif()
 
-include(onnxruntime_fuzz_test.cmake)
+include(onnxruntime_fuzz_test)

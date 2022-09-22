@@ -298,7 +298,7 @@ if (onnxruntime_ENABLE_TRAINING)
   endif()
 endif()
 
-install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/cpu  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/onnxruntime/core/providers/cpu  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
 set_target_properties(onnxruntime_providers PROPERTIES LINKER_LANGUAGE CXX)
 set_target_properties(onnxruntime_providers PROPERTIES FOLDER "ONNXRuntime")
 
@@ -480,7 +480,7 @@ if (onnxruntime_USE_CUDA)
   endif()
 
   if (CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 11)
-    target_include_directories(onnxruntime_providers_cuda PRIVATE ${PROJECT_SOURCE_DIR}/external/cub)
+    target_include_directories(onnxruntime_providers_cuda PRIVATE ${PROJECT_SOURCE_DIR}/cmake/external/cub)
   endif()
 
   if (onnxruntime_ENABLE_TRAINING OR onnxruntime_ENABLE_TRAINING_OPS)
@@ -558,7 +558,7 @@ if (onnxruntime_USE_DNNL)
   target_include_directories(onnxruntime_providers_dnnl PRIVATE ${ONNXRUNTIME_ROOT} ${eigen_INCLUDE_DIRS} ${DNNL_INCLUDE_DIR} ${DNNL_OCL_INCLUDE_DIR})
   # ${CMAKE_CURRENT_BINARY_DIR} is so that #include "onnxruntime_config.h" inside tensor_shape.h is found
   target_link_libraries(onnxruntime_providers_dnnl PRIVATE dnnl ${ONNXRUNTIME_PROVIDERS_SHARED} Boost::mp11 ${ABSEIL_LIBS})
-  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/dnnl  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
+  install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/onnxruntime/core/providers/dnnl  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
   set_target_properties(onnxruntime_providers_dnnl PROPERTIES FOLDER "ONNXRuntime")
   set_target_properties(onnxruntime_providers_dnnl PROPERTIES LINKER_LANGUAGE CXX)
 
@@ -597,7 +597,7 @@ if (onnxruntime_USE_TENSORRT)
   set(BUILD_LIBRARY_ONLY 1)
   add_definitions("-DONNX_ML=1")
   add_definitions("-DONNX_NAMESPACE=onnx")
-  include_directories(${PROJECT_SOURCE_DIR}/external/protobuf)
+  include_directories(${PROJECT_SOURCE_DIR}/cmake/external/protobuf)
   set(CUDA_INCLUDE_DIRS ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
   set(TENSORRT_ROOT ${onnxruntime_TENSORRT_HOME})
   include_directories(${ONNXRUNTIME_ROOT}/../cmake/external/onnx)
@@ -679,7 +679,7 @@ if (onnxruntime_USE_TENSORRT)
     target_include_directories(onnxruntime_providers_tensorrt PRIVATE ${onnxruntime_CUDNN_HOME}/include)
   endif()
   # ${CMAKE_CURRENT_BINARY_DIR} is so that #include "onnxruntime_config.h" inside tensor_shape.h is found
-  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/tensorrt  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
+  install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/onnxruntime/core/providers/tensorrt  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
   set_target_properties(onnxruntime_providers_tensorrt PROPERTIES LINKER_LANGUAGE CUDA)
   set_target_properties(onnxruntime_providers_tensorrt PROPERTIES FOLDER "ONNXRuntime")
   target_compile_definitions(onnxruntime_providers_tensorrt PRIVATE ONNXIFI_BUILD_LIBRARY=1)
@@ -729,7 +729,7 @@ if (onnxruntime_USE_VITISAI)
   add_dependencies(onnxruntime_providers_vitisai ${onnxruntime_EXTERNAL_DEPENDENCIES})
   set_target_properties(onnxruntime_providers_vitisai PROPERTIES FOLDER "ONNXRuntime")
   target_include_directories(onnxruntime_providers_vitisai PRIVATE ${ONNXRUNTIME_ROOT} ${eigen_INCLUDE_DIRS} ${VITISAI_INCLUDE_DIR})
-  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/vitisai
+  install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/onnxruntime/core/providers/vitisai
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers
   )
   set_target_properties(onnxruntime_providers_vitisai PROPERTIES LINKER_LANGUAGE CXX)
@@ -782,7 +782,7 @@ if (onnxruntime_USE_OPENVINO)
   source_group(TREE ${ONNXRUNTIME_ROOT}/core FILES ${onnxruntime_providers_openvino_cc_srcs})
   onnxruntime_add_shared_library_module(onnxruntime_providers_openvino ${onnxruntime_providers_openvino_cc_srcs} "${ONNXRUNTIME_ROOT}/core/dll/onnxruntime.rc")
   onnxruntime_add_include_to_target(onnxruntime_providers_openvino onnxruntime_common onnx)
-  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/openvino  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
+  install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/onnxruntime/core/providers/openvino  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
   set_target_properties(onnxruntime_providers_openvino PROPERTIES LINKER_LANGUAGE CXX)
   set_target_properties(onnxruntime_providers_openvino PROPERTIES FOLDER "ONNXRuntime")
   if(NOT MSVC)
@@ -833,7 +833,7 @@ if (onnxruntime_USE_COREML)
 
   # Compile CoreML proto definition to ${CMAKE_CURRENT_BINARY_DIR}/coreml
   if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    set(COREML_PROTO_ROOT ${PROJECT_SOURCE_DIR}/../onnxruntime/core/providers/coreml/mlmodel_format)
+    set(COREML_PROTO_ROOT ${PROJECT_SOURCE_DIR}/onnxruntime/core/providers/coreml/mlmodel_format)
     file(GLOB coreml_proto_srcs
       "${COREML_PROTO_ROOT}/*.proto"
     )
@@ -1125,7 +1125,7 @@ if (onnxruntime_USE_DML)
     target_compile_options(onnxruntime_providers_dml PRIVATE "/W3")
   endif()
 
-  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/dml
+  install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/onnxruntime/core/providers/dml
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers
   )
 
@@ -1146,7 +1146,7 @@ if (onnxruntime_USE_MIGRAPHX)
   set(BUILD_LIBRARY_ONLY 1)
   add_definitions("-DONNX_ML=1")
   add_definitions("-DONNX_NAMESPACE=onnx")
-  include_directories(${PROJECT_SOURCE_DIR}/external/protobuf ${PROJECT_SOURCE_DIR}/external/eigen)
+  include_directories(${PROJECT_SOURCE_DIR}/cmake/external/protobuf ${PROJECT_SOURCE_DIR}/cmake/external/eigen)
   set(MIGRAPHX_ROOT ${onnxruntime_MIGRAPHX_HOME})
   include_directories(${ONNXRUNTIME_ROOT}/../cmake/external/onnx)
   set(OLD_CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
@@ -1179,7 +1179,7 @@ if (onnxruntime_USE_MIGRAPHX)
   add_dependencies(onnxruntime_providers_migraphx onnxruntime_providers_shared ${onnxruntime_EXTERNAL_DEPENDENCIES})
   target_link_libraries(onnxruntime_providers_migraphx PRIVATE ${migraphx_libs} ${ONNXRUNTIME_PROVIDERS_SHARED} onnx flatbuffers)
   target_include_directories(onnxruntime_providers_migraphx PRIVATE ${ONNXRUNTIME_ROOT} ${CMAKE_CURRENT_BINARY_DIR})
-  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/migraphx  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
+  install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/onnxruntime/core/providers/migraphx  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
   set_target_properties(onnxruntime_providers_migraphx PROPERTIES LINKER_LANGUAGE CXX)
   set_target_properties(onnxruntime_providers_migraphx PROPERTIES FOLDER "ONNXRuntime")
   target_compile_definitions(onnxruntime_providers_migraphx PRIVATE ONNXIFI_BUILD_LIBRARY=1)
@@ -1214,7 +1214,7 @@ if (onnxruntime_USE_ACL)
     PRIVATE
     ${ONNXRUNTIME_ROOT} ${eigen_INCLUDE_DIRS} ${onnxruntime_ACL_HOME} ${onnxruntime_ACL_HOME}/include
   )
-  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/acl
+  install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/onnxruntime/core/providers/acl
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers
   )
   set_target_properties(onnxruntime_providers_acl PROPERTIES LINKER_LANGUAGE CXX)
@@ -1246,7 +1246,7 @@ if (onnxruntime_USE_ARMNN)
     ${ONNXRUNTIME_ROOT} ${eigen_INCLUDE_DIRS} ${onnxruntime_ARMNN_HOME} ${onnxruntime_ARMNN_HOME}/include
     ${onnxruntime_ACL_HOME} ${onnxruntime_ACL_HOME}/include
   )
-  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/armnn
+  install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/onnxruntime/core/providers/armnn
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers
   )
   set_target_properties(onnxruntime_providers_armnn PROPERTIES LINKER_LANGUAGE CXX)
@@ -1396,7 +1396,7 @@ if (onnxruntime_USE_ROCM)
   target_link_libraries(onnxruntime_providers_rocm PRIVATE ${ONNXRUNTIME_ROCM_LIBS} ${ONNXRUNTIME_PROVIDERS_SHARED} ${ABSEIL_LIBS})
   # During transition to separate hipFFT repo, put hipfft/include early
   target_include_directories(onnxruntime_providers_rocm PRIVATE ${ONNXRUNTIME_ROOT} ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_BINARY_DIR}/amdgpu/onnxruntime ${eigen_INCLUDE_DIRS} PUBLIC ${onnxruntime_ROCM_HOME}/hipfft/include ${onnxruntime_ROCM_HOME}/include ${onnxruntime_ROCM_HOME}/hipcub/include ${onnxruntime_ROCM_HOME}/hiprand/include ${onnxruntime_ROCM_HOME}/rocrand/include ${onnxruntime_ROCM_HOME}/roctracer/include)
-  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/rocm  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
+  install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/onnxruntime/core/providers/rocm  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
   set_target_properties(onnxruntime_providers_rocm PROPERTIES LINKER_LANGUAGE CXX)
   set_target_properties(onnxruntime_providers_rocm PROPERTIES FOLDER "ONNXRuntime")
 
@@ -1488,7 +1488,7 @@ if (onnxruntime_USE_TVM)
   endif()
   target_compile_definitions(onnxruntime_providers_tvm PUBLIC DMLC_USE_LOGGING_LIBRARY=<tvm/runtime/logging.h>)
 
-  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/tvm  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
+  install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/onnxruntime/core/providers/tvm  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
 
   if (NOT onnxruntime_BUILD_SHARED_LIB)
     install(TARGETS onnxruntime_providers_tvm

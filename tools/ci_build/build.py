@@ -829,7 +829,7 @@ def generate_build_tree(
     cmake_extra_args,
 ):
     log.info("Generating CMake build tree")
-    cmake_dir = os.path.join(source_dir, "cmake")
+    cmake_dir = os.path.normpath(source_dir)
     cmake_args = [
         cmake_path,
         cmake_dir,
@@ -1142,7 +1142,7 @@ def generate_build_tree(
             # we do not need protoc binary for ios cross build
             "-Dprotobuf_BUILD_PROTOC_BINARIES=OFF",
             "-DCMAKE_TOOLCHAIN_FILE="
-            + (args.ios_toolchain_file if args.ios_toolchain_file else "../cmake/onnxruntime_ios.toolchain.cmake"),
+            + (args.ios_toolchain_file if args.ios_toolchain_file else "cmake/onnxruntime_ios.toolchain.cmake"),
         ]
 
     if args.build_wasm:
