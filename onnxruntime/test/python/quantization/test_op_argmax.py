@@ -7,28 +7,55 @@
 # --------------------------------------------------------------------------
 
 import unittest
+from pathlib import Path
 
 import numpy as np
 import onnx
 from onnx import TensorProto, helper
-from op_test_utils import (
-    TestDataFeeds,
-    check_model_correctness,
-    check_op_nodes,
-    check_op_type_count,
-    check_qtype_by_node_type,
-)
+from op_test_utils import TestCaseTempDir, TestDataFeeds, check_op_nodes, check_op_type_count, check_qtype_by_node_type
 
-from onnxruntime.quantization import QuantFormat, QuantType, quantize_static
+import onnxruntime
+from onnxruntime.quantization import QuantFormat, QuantType, quantize_dynamic, quantize_static
 
 
-class TestOpArgMax(unittest.TestCase):
+def check_fraction_correct(testcase, model_path_origin, model_path_to_check, inputs, tolerance=0.05):
+    sess_options = onnxruntime.SessionOptions()
+    sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL  # TODO: ENABLE_ALL?
+
+    origin_sess = onnxruntime.InferenceSession(
+        model_path_origin, sess_options=sess_options, providers=["CPUExecutionProvider"]
+    )
+    origin_results = origin_sess.run([], inputs)
+    # enable QDQ transformers
+    sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+    target_sess = onnxruntime.InferenceSession(
+        model_path_to_check,
+        sess_options=sess_options,
+        providers=["CPUExecutionProvider"],
+    )
+
+    target_results = target_sess.run([], inputs)
+    testcase.assertEqual(len(origin_results), len(target_results), "result count are different")
+    # np.set_printoptions(threshold=sys.maxsize)
+    for idx, ref_output in enumerate(origin_results):
+        output = target_results[idx]
+        a = np.array(output)
+        b = np.array(ref_output)
+        fraction_wrong = np.sum(a != b) / (a.shape[0] * a.shape[1] * a.shape[2])
+        assert fraction_wrong < tolerance, (
+            "fraction incorrect (" + str(fraction_wrong) + ") exceeds tolerance (" + str(tolerance) + ")"
+        )
+
+
+class TestOpArgMax(TestCaseTempDir):
     def input_feeds(self, n, name2shape):
         input_data_list = []
         for i in range(n):
             inputs = {}
             for name, shape in name2shape.items():
-                inputs.update({name: np.random.randint(-1, 2, shape).astype(np.float32)})
+                # TODO: Use nonrandom linear input
+                rand_arr = np.random.normal(0.0, 0.1, shape).astype(np.float32)
+                inputs.update({name: rand_arr})
             input_data_list.extend([inputs])
         dr = TestDataFeeds(input_data_list)
         return dr
@@ -47,7 +74,8 @@ class TestOpArgMax(unittest.TestCase):
 
         # make Conv node
         conv_weight_name = "conv_weight"
-        conv_weight_arr = np.random.randint(-1, 2, [32, 256, 1, 1]).astype(np.float32)
+        # conv_weight_arr = np.random.randint(-1, 2, [32, 256, 1, 1]).astype(np.float32)
+        conv_weight_arr = np.random.normal(0.0, 0.1, (32, 256, 1, 1)).astype(np.float32)
         conv_weight_initializer = onnx.numpy_helper.from_array(conv_weight_arr, name=conv_weight_name)
         conv_output_name = "conv_output"
         conv_inputs = [input_name, conv_weight_name]
@@ -98,6 +126,7 @@ class TestOpArgMax(unittest.TestCase):
     def quantize_argmax_test(self, activation_type, weight_type, extra_options={}):
         np.random.seed(1)
         model_fp32_path = "argmax_fp32.onnx"
+        model_fp32_path = Path(self._tmp_model_dir.name).joinpath(model_fp32_path).as_posix()
 
         self.construct_model_argmax(model_fp32_path, [1, 256, 128, 128], [1, 32, 128])
 
@@ -105,8 +134,17 @@ class TestOpArgMax(unittest.TestCase):
         activation_type_str = "u8" if (activation_type == QuantType.QUInt8) else "s8"
         weight_type_str = "u8" if (weight_type == QuantType.QUInt8) else "s8"
         model_uint8_path = "argmax_{}{}.onnx".format(activation_type_str, weight_type_str)
+        model_uint8_path = Path(self._tmp_model_dir.name).joinpath(model_uint8_path).as_posix()
         model_uint8_qdq_path = "argmax_{}{}_qdq.onnx".format(activation_type_str, weight_type_str)
+        model_uint8_qdq_path = Path(self._tmp_model_dir.name).joinpath(model_uint8_qdq_path).as_posix()
         model_uint8_qdq_trt_path = "argmax_{}{}_qdq_trt.onnx".format(activation_type_str, weight_type_str)
+        model_uint8_qdq_trt_path = Path(self._tmp_model_dir.name).joinpath(model_uint8_qdq_trt_path).as_posix()
+        model_uint8_qdq_dyn_path = "argmax_{}{}_qdq_dyn.onnx".format(activation_type_str, weight_type_str)
+        model_uint8_qdq_dyn_path = Path(self._tmp_model_dir.name).joinpath(model_uint8_qdq_dyn_path).as_posix()
+        model_t_uint8_qdq_dyn_path = "t_u_argmax_{}{}_qdq_dyn.onnx".format(activation_type_str, weight_type_str)
+        model_t_uint8_qdq_dyn_path = Path(self._tmp_model_dir.name).joinpath(model_t_uint8_qdq_dyn_path).as_posix()
+        model_t_int8_qdq_dyn_path = "t_i_argmax_{}{}_qdq_dyn.onnx".format(activation_type_str, weight_type_str)
+        model_t_int8_qdq_dyn_path = Path(self._tmp_model_dir.name).joinpath(model_t_int8_qdq_dyn_path).as_posix()
 
         # Verify QOperator mode
         data_reader = self.input_feeds(1, {"input": [1, 256, 128, 128]})
@@ -135,7 +173,7 @@ class TestOpArgMax(unittest.TestCase):
         }
         check_qtype_by_node_type(self, model_uint8_path, qnode_io_qtypes)
         data_reader.rewind()
-        check_model_correctness(self, model_fp32_path, model_uint8_path, data_reader.get_next())
+        check_fraction_correct(self, model_fp32_path, model_uint8_path, data_reader.get_next())
 
         # Verify QDQ mode
         data_reader.rewind()
@@ -158,7 +196,7 @@ class TestOpArgMax(unittest.TestCase):
         }
         check_qtype_by_node_type(self, model_uint8_qdq_path, qnode_io_qtypes)
         data_reader.rewind()
-        check_model_correctness(self, model_fp32_path, model_uint8_qdq_path, data_reader.get_next())
+        check_fraction_correct(self, model_fp32_path, model_uint8_qdq_path, data_reader.get_next())
 
         # Verify QDQ mode for TensorRT
         data_reader.rewind()
@@ -170,9 +208,9 @@ class TestOpArgMax(unittest.TestCase):
             activation_type=activation_type,
             weight_type=weight_type,
             extra_options=extra_options,
-            op_types_to_quantize=["ArgMax"],
+            op_types_to_quantize=["ArgMax", "Conv"],
         )
-        qdqnode_counts = {"QuantizeLinear": 1, "DequantizeLinear": 1, "ArgMax": 1}
+        qdqnode_counts = {"QuantizeLinear": 2, "DequantizeLinear": 3, "ArgMax": 1}
         check_op_type_count(self, model_uint8_qdq_trt_path, **qdqnode_counts)
         qnode_io_qtypes = {
             "QuantizeLinear": [
@@ -182,7 +220,48 @@ class TestOpArgMax(unittest.TestCase):
         }
         check_qtype_by_node_type(self, model_uint8_qdq_trt_path, qnode_io_qtypes)
         data_reader.rewind()
-        check_model_correctness(self, model_fp32_path, model_uint8_qdq_trt_path, data_reader.get_next())
+        check_fraction_correct(self, model_fp32_path, model_uint8_qdq_trt_path, data_reader.get_next())
+
+        # Verify QDQ Dynamic
+        data_reader.rewind()
+        quantize_dynamic(
+            model_fp32_path,
+            model_uint8_qdq_dyn_path,
+            quant_format=QuantFormat.QDQ,
+            activation_type=activation_type,
+            weight_type=weight_type,
+            extra_options=extra_options,
+            op_types_to_quantize=["ArgMax", "Conv"],
+        )
+        qdqnode_counts = {"QuantizeLinear": 1, "DequantizeLinear": 2, "ArgMax": 1}
+        check_op_type_count(self, model_uint8_qdq_dyn_path, **qdqnode_counts)
+        data_reader.rewind()
+        check_fraction_correct(self, model_fp32_path, model_uint8_qdq_dyn_path, data_reader.get_next())
+
+        data_reader.rewind()
+        quantize_dynamic(
+            model_fp32_path,
+            model_t_uint8_qdq_dyn_path,
+            quant_format=QuantFormat.QDQ,
+            activation_type=QuantType.QUInt8,
+            weight_type=weight_type,
+            extra_options=extra_options,
+            op_types_to_quantize=["ArgMax", "Conv"],
+        )
+
+        data_reader.rewind()
+        quantize_dynamic(
+            model_fp32_path,
+            model_t_int8_qdq_dyn_path,
+            quant_format=QuantFormat.QDQ,
+            activation_type=QuantType.QInt8,
+            weight_type=weight_type,
+            extra_options=extra_options,
+            op_types_to_quantize=["ArgMax", "Conv"],
+        )
+
+        data_reader.rewind()
+        check_fraction_correct(self, model_t_int8_qdq_dyn_path, model_t_uint8_qdq_dyn_path, data_reader.get_next())
 
     def test_quantize_argmax(self):
         self.quantize_argmax_test(QuantType.QUInt8, QuantType.QUInt8)

@@ -1,3 +1,5 @@
+import tempfile
+import unittest
 import uuid
 from pathlib import Path
 
@@ -21,6 +23,16 @@ class TestDataFeeds(CalibrationDataReader):
 
     def rewind(self):
         self.iter_next = iter(self.data_feeds)
+
+
+class TestCaseTempDir(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp_model_dir = tempfile.TemporaryDirectory(prefix="test_op.")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp_model_dir.cleanup()
 
 
 def InputFeedsNegOneZeroOne(n, name2shape):

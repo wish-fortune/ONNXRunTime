@@ -4,6 +4,7 @@ from onnx import onnx_pb as onnx_proto
 
 from ..quant_utils import QuantType, attribute_to_kwarg, ms_domain
 from .base_operator import QuantOperatorBase
+from .qdq_base_operator import QDQOperatorBase
 
 """
     Quantize LSTM
@@ -113,3 +114,19 @@ class LSTMQuant(QuantOperatorBase):
         dequantize_node = self.quantizer._dequantize_value(node.input[0])
         if dequantize_node is not None:
             self.quantizer.new_nodes.append(dequantize_node)
+
+
+class QDQLSTM(QDQOperatorBase):
+    def __init__(self, onnx_quantizer, onnx_node):
+        super().__init__(onnx_quantizer, onnx_node)
+
+    # TODO: Add support for options
+    def quantize(self):
+        node = self.node
+        assert node.op_type == "LSTM"
+
+        self.quantizer.quantize_activation_tensor(node.input[0])
+        if not self.disable_qdq_for_node_output:
+            self.quantizer.quantize_activation_tensor(node.output[0])
+
+        self.quantizer.quantize_weight_tensor_per_channel(node.input[1], 1)

@@ -1,6 +1,6 @@
 from .operators.activation import QDQRemovableActivation, QLinearActivation
 from .operators.argmax import QArgMax
-from .operators.attention import AttentionQuant
+from .operators.attention import AttentionQuant, QDQAttention
 from .operators.base_operator import QuantOperatorBase
 from .operators.binary_op import QLinearBinaryOp
 from .operators.concat import QLinearConcat
@@ -10,7 +10,7 @@ from .operators.embed_layernorm import EmbedLayerNormalizationQuant
 from .operators.gather import GatherQuant, QDQGather
 from .operators.gavgpool import QGlobalAveragePool
 from .operators.gemm import QDQGemm, QLinearGemm
-from .operators.lstm import LSTMQuant
+from .operators.lstm import QDQLSTM, LSTMQuant
 from .operators.matmul import MatMulInteger, QDQMatMul, QLinearMatMul
 from .operators.maxpool import QDQMaxPool, QMaxPool
 from .operators.pad import QPad
@@ -78,6 +78,15 @@ QDQRegistry = {
     "Softmax": QDQSoftmax,
 }
 
+QDQDynamicRegistry = {
+    "Conv": QDQConv,
+    "Gemm": QDQGemm,
+    "MatMul": QDQMatMul,
+    "Attention": QDQAttention,
+    "LSTM": QDQLSTM,
+}
+QDQDynamicRegistry.update(CommonOpsRegistry)  # Is this ok?
+
 
 def CreateDefaultOpQuantizer(onnx_quantizer, node):
     return QuantOperatorBase(onnx_quantizer, node)
@@ -93,6 +102,11 @@ def CreateOpQuantizer(onnx_quantizer, node):
 
 
 def CreateQDQQuantizer(onnx_quantizer, node):
-    if node.op_type in QDQRegistry.keys():
+    if onnx_quantizer.static and node.op_type in QDQRegistry.keys():
         return QDQRegistry[node.op_type](onnx_quantizer, node)
+    elif not onnx_quantizer.static:
+        if node.op_type in QDQDynamicRegistry.keys():
+            return QDQDynamicRegistry[node.op_type](onnx_quantizer, node)
+        else:
+            return None
     return QDQOperatorBase(onnx_quantizer, node)

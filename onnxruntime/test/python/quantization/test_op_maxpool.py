@@ -7,11 +7,13 @@
 # --------------------------------------------------------------------------
 
 import unittest
+from pathlib import Path
 
 import numpy as np
 import onnx
 from onnx import TensorProto, helper
 from op_test_utils import (
+    TestCaseTempDir,
     TestDataFeeds,
     check_model_correctness,
     check_op_nodes,
@@ -19,16 +21,16 @@ from op_test_utils import (
     check_qtype_by_node_type,
 )
 
-from onnxruntime.quantization import QuantFormat, QuantType, quantize_static
+from onnxruntime.quantization import QuantFormat, QuantType, quantize_dynamic, quantize_static
 
 
-class TestOpMaxPool(unittest.TestCase):
+class TestOpMaxPool(TestCaseTempDir):
     def input_feeds(self, n, name2shape):
         input_data_list = []
         for i in range(n):
             inputs = {}
             for name, shape in name2shape.items():
-                inputs.update({name: np.random.randint(-1, 2, shape).astype(np.float32)})
+                inputs.update({name: np.random.normal(0, 0.2, shape).astype(np.float32)})
             input_data_list.extend([inputs])
         dr = TestDataFeeds(input_data_list)
         return dr
@@ -51,7 +53,7 @@ class TestOpMaxPool(unittest.TestCase):
         # (identity_out)  (output)
         input_tensor = helper.make_tensor_value_info("input", TensorProto.FLOAT, conv_input_shape)
 
-        conv_weight_arr = np.random.randint(-1, 2, conv_weight_shape).astype(np.float32)
+        conv_weight_arr = np.random.normal(0, 0.1, conv_weight_shape).astype(np.float32)
         conv_weight_initializer = onnx.numpy_helper.from_array(conv_weight_arr, name="conv1_weight")
         conv_node = onnx.helper.make_node("Conv", ["input", "conv1_weight"], ["conv_output"], name="conv_node")
 
@@ -79,6 +81,7 @@ class TestOpMaxPool(unittest.TestCase):
     def quantize_maxpool_test(self, activation_type, weight_type, extra_options={}):
         np.random.seed(1)
         model_fp32_path = "maxpool_fp32.onnx"
+        model_fp32_path = Path(self._tmp_model_dir.name).joinpath(model_fp32_path).as_posix()
         self.construct_model_conv_maxpool(
             model_fp32_path,
             [1, 2, 26, 42],
@@ -93,7 +96,11 @@ class TestOpMaxPool(unittest.TestCase):
         activation_type_str = "u8" if (activation_type == QuantType.QUInt8) else "s8"
         weight_type_str = "u8" if (weight_type == QuantType.QUInt8) else "s8"
         model_q8_path = "maxpool_{}{}.onnx".format(activation_type_str, weight_type_str)
+        model_q8_path = Path(self._tmp_model_dir.name).joinpath(model_q8_path).as_posix()
         model_q8_qdq_path = "maxpool_dqd_{}{}.onnx".format(activation_type_str, weight_type_str)
+        model_q8_qdq_path = Path(self._tmp_model_dir.name).joinpath(model_q8_qdq_path).as_posix()
+        model_q8_qdq_dyn_path = "maxpool_dqd_dyn_{}{}.onnx".format(activation_type_str, weight_type_str)
+        model_q8_qdq_dyn_path = Path(self._tmp_model_dir.name).joinpath(model_q8_qdq_dyn_path).as_posix()
 
         # Verify QOperator mode
         data_reader.rewind()
@@ -148,6 +155,35 @@ class TestOpMaxPool(unittest.TestCase):
             "MaxPool": 1,
         }
         check_op_type_count(self, model_q8_qdq_path, **qdqnode_counts)
+        qnode_io_qtypes = {
+            "QuantizeLinear": [
+                ["i", 2, activation_proto_qtype],
+                ["o", 0, activation_proto_qtype],
+            ]
+        }
+        qnode_io_qtypes.update({"DequantizeLinear": [["i", 2, activation_proto_qtype]]})
+        check_qtype_by_node_type(self, model_q8_qdq_path, qnode_io_qtypes)
+        data_reader.rewind()
+        check_model_correctness(self, model_fp32_path, model_q8_qdq_path, data_reader.get_next())
+
+        # Verify QDQ Dynamic mode
+        data_reader.rewind()
+        quantize_dynamic(
+            model_fp32_path,
+            model_q8_qdq_dyn_path,
+            quant_format=QuantFormat.QDQ,
+            activation_type=activation_type,
+            weight_type=weight_type,
+            extra_options=extra_options,
+            op_types_to_quantize=["Conv", "MaxPool"],
+        )
+        qdqnode_counts = {
+            "Conv": 1,
+            "QuantizeLinear": 1,
+            "DequantizeLinear": 2,
+            "MaxPool": 1,
+        }
+        check_op_type_count(self, model_q8_qdq_dyn_path, **qdqnode_counts)
         qnode_io_qtypes = {
             "QuantizeLinear": [
                 ["i", 2, activation_proto_qtype],

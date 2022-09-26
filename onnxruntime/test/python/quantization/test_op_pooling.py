@@ -7,28 +7,29 @@
 # --------------------------------------------------------------------------
 
 import unittest
+from pathlib import Path
 
 import numpy as np
 import onnx
 from onnx import TensorProto, helper
 from op_test_utils import (
+    TestCaseTempDir,
     TestDataFeeds,
     check_model_correctness,
-    check_op_nodes,
     check_op_type_count,
     check_qtype_by_node_type,
 )
 
-from onnxruntime.quantization import QuantFormat, QuantType, quantize_static
+from onnxruntime.quantization import QuantFormat, QuantType, quantize_dynamic, quantize_static
 
 
-class TestOpAveragePool(unittest.TestCase):
+class TestOpAveragePool(TestCaseTempDir):
     def input_feeds(self, n, name2shape):
         input_data_list = []
         for i in range(n):
             inputs = {}
             for name, shape in name2shape.items():
-                inputs.update({name: np.random.randint(-1, 2, shape).astype(np.float32)})
+                inputs.update({name: np.random.normal(-0.1, 0.2, shape).astype(np.float32)})
             input_data_list.extend([inputs])
         dr = TestDataFeeds(input_data_list)
         return dr
@@ -79,6 +80,7 @@ class TestOpAveragePool(unittest.TestCase):
     def quantize_avgpool_test(self, activation_type, weight_type, extra_options={}):
         np.random.seed(1)
         model_fp32_path = "avgpool_fp32.onnx"
+        model_fp32_path = Path(self._tmp_model_dir.name).joinpath(model_fp32_path).as_posix()
         self.construct_model_conv_avgpool(
             model_fp32_path,
             [1, 2, 26, 42],
@@ -93,7 +95,11 @@ class TestOpAveragePool(unittest.TestCase):
         activation_type_str = "u8" if (activation_type == QuantType.QUInt8) else "s8"
         weight_type_str = "u8" if (weight_type == QuantType.QUInt8) else "s8"
         model_q8_path = "avgpool_{}{}.onnx".format(activation_type_str, weight_type_str)
+        model_q8_path = Path(self._tmp_model_dir.name).joinpath(model_q8_path).as_posix()
         model_q8_qdq_path = "avgpool_qdq_{}{}.onnx".format(activation_type_str, weight_type_str)
+        model_q8_qdq_path = Path(self._tmp_model_dir.name).joinpath(model_q8_qdq_path).as_posix()
+        model_q8_qdq_dyn_path = "avgpool_qdq_dyn_{}{}.onnx".format(activation_type_str, weight_type_str)
+        model_q8_qdq_dyn_path = Path(self._tmp_model_dir.name).joinpath(model_q8_qdq_dyn_path).as_posix()
 
         # Verify QOperator mode
         data_reader.rewind()
@@ -130,7 +136,7 @@ class TestOpAveragePool(unittest.TestCase):
         )
         qnode_io_qtypes.update(
             {"QLinearAveragePool": [["i", 4, activation_proto_qtype]]}
-        )  # shape info note workig on custome ops
+        )  # shape info note workig on custom ops
         check_qtype_by_node_type(self, model_q8_path, qnode_io_qtypes)
         data_reader.rewind()
         check_model_correctness(self, model_fp32_path, model_q8_path, data_reader.get_next())
@@ -162,6 +168,34 @@ class TestOpAveragePool(unittest.TestCase):
         check_qtype_by_node_type(self, model_q8_qdq_path, qnode_io_qtypes)
         data_reader.rewind()
         check_model_correctness(self, model_fp32_path, model_q8_qdq_path, data_reader.get_next())
+
+        # Verify QDQ Dynamic mode
+        data_reader.rewind()
+        quantize_dynamic(
+            model_fp32_path,
+            model_q8_qdq_dyn_path,
+            quant_format=QuantFormat.QDQ,
+            activation_type=activation_type,
+            weight_type=weight_type,
+            extra_options=extra_options,
+            op_types_to_quantize=["Conv", "AveragePool"],
+        )
+        qdqnode_counts = {
+            "Conv": 1,
+            "QuantizeLinear": 1,
+            "DequantizeLinear": 2,
+            "AveragePool": 1,
+        }
+        check_op_type_count(self, model_q8_qdq_dyn_path, **qdqnode_counts)
+        qnode_io_qtypes = {
+            "QuantizeLinear": [
+                ["i", 2, activation_proto_qtype],
+                ["o", 0, activation_proto_qtype],
+            ]
+        }
+        check_qtype_by_node_type(self, model_q8_qdq_dyn_path, qnode_io_qtypes)
+        data_reader.rewind()
+        check_model_correctness(self, model_fp32_path, model_q8_qdq_dyn_path, data_reader.get_next())
 
     def test_quantize_avgpool(self):
         self.quantize_avgpool_test(QuantType.QUInt8, QuantType.QUInt8)
