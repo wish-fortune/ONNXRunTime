@@ -18,6 +18,7 @@ class NGramRepeatBlock final : public CudaKernel {
 
  private:
   int64_t ngram_size_;
+  int64_t recency_length_;
 };
 
 }  // namespace cuda
