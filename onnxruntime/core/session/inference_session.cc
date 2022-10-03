@@ -290,6 +290,40 @@ void InferenceSession::ConstructorCommon(const SessionOptions& session_options,
         to.dynamic_block_base_ = std::stoi(session_options_.config_options.GetConfigOrDefault(kOrtSessionOptionsConfigDynamicBlockBase, "0"));
         LOGS(*session_logger_, INFO) << "Dynamic block base set to " << to.dynamic_block_base_;
 
+        //////////////////////////// read and set affinity //////////////////////////////
+        auto affinity_string = session_options_.config_options.GetConfigOrDefault(kOrtSessionOptionsConfigThreadGroupAffinities, "");
+        auto Split = [](const std::string& s, char splitor) {
+          std::vector<std::string> ans;
+          std::string tmp;
+          std::stringstream ss;
+          ss << s;
+          while (getline(ss, tmp, splitor)) {
+            if (!tmp.empty()) {
+              ans.push_back(tmp);
+            }
+          }
+          return ans;
+        };
+        auto ReadGroupAffinity = [&](const std::string& s) {
+          auto affinity_strings = Split(s, ',');
+          GroupAffinity group_affinity;
+          group_affinity.first = std::stoull(affinity_strings[0].c_str());
+          group_affinity.second = std::stoull(affinity_strings[1].c_str());
+          return std::move(group_affinity);
+        };
+        auto ReadGroupAffinities = [&](const std::string& s) {
+          auto affinity_strings = Split(s, ';');
+          GroupAffinities group_affinities;
+          for (const auto& iter : affinity_strings) {
+            group_affinities.push_back(ReadGroupAffinity(iter));
+          }
+          return group_affinities;
+        };
+        to.group_affinities = ReadGroupAffinities(affinity_string);
+        if (!to.group_affinities.empty()) {
+          ORT_ENFORCE((to.thread_pool_size - 1) == static_cast<int>(to.group_affinities.size()),
+                      "number of affinities must equal to thread_pool_size minus 1");
+        }
         // Set custom threading functions
         to.custom_create_thread_fn = session_options_.custom_create_thread_fn;
         to.custom_thread_creation_options = session_options.custom_thread_creation_options;
