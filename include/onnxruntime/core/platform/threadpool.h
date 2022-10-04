@@ -137,6 +137,9 @@ class ExtendedThreadPoolInterface;
 class LoopCounter;
 class ThreadPoolParallelSection;
 
+void SetSmallCore(bool);
+bool IsSmallCore();
+
 class ThreadPool {
  public:
 #ifdef _WIN32
@@ -429,6 +432,8 @@ class ThreadPool {
 
   // Force the thread pool to run in hybrid mode on a normal cpu.
   bool force_hybrid_ = false;
+
+  int small_core_ratio_ = 1;
 };
 
 }  // namespace concurrency
