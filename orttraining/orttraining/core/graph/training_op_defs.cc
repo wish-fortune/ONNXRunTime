@@ -1,6 +1,11 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+// For gradient ops, normally we can skip adding the shape and type inference because our gradient builder
+// will use the corresponding input's shape and type to set the output shape and type to the graph by default.
+// Since such Ops are used during gradient builder only, adding shape and type inference is not necessary,
+// and would require effort to maintain (e.g. if there is bug).
+
 #include "orttraining/core/graph/training_op_defs.h"
 
 #include <math.h>
@@ -2493,6 +2498,24 @@ Example 4:
           {// nodes: {outputs, op, inputs, attributes}
            {{"X_1"}, "Cos", {"X"}},
            {{"dX"}, "Mul", {"X_1", "dY"}}}));
+
+  ONNX_CONTRIB_OPERATOR_SCHEMA(CosGrad)
+    .SetDomain(kOnnxDomain)
+    .SinceVersion(9)
+    .SetSupportLevel(OpSchema::SupportType::EXPERIMENTAL)
+    .SetDoc("Gradient function for Cos")
+    .AllowUncheckedAttributes()
+    .Input(0, "dY", "Cos output's grad", "T")
+    .Input(1, "X", "Input tensor", "T")
+    .Output(0, "dX", "Cos input's grad", "T")
+    .TypeConstraint(
+        "T",
+        {"tensor(float16)", "tensor(float)", "tensor(double)"},
+        "Constrain input and output types to all numeric tensors.")
+    .FunctionBody(ONNX_NAMESPACE::FunctionBodyHelper::BuildNodes(
+        {// nodes: {outputs, op, inputs, attributes}
+          {{"X_1"}, "Sin", {"X"}},
+          {{"dX"}, "Mul", {"X_1", "dY"}}}));
 
   ONNX_CONTRIB_OPERATOR_SCHEMA(SummaryScalar)
       .SetDomain(kMSDomain)
