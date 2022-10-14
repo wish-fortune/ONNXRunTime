@@ -4,9 +4,17 @@
 #pragma once
 
 #include "core/providers/cuda/cuda_kernel.h"
+#include "core/platform/env_var_utils.h"
 
 namespace onnxruntime {
 namespace cuda {
+
+namespace matmul_detail {
+// Environment variable to disable CublasLtMatmul and use CublasGemm instead. Default is false.
+constexpr const char* kDisableCublasLtMatmul = "ORT_DISABLE_CUBLASLT_MATMUL";
+
+}  // namespace matmul_detail
+
 template <typename T>
 class Gemm final : public CudaKernel {
   using Base = CudaKernel;
@@ -22,6 +30,10 @@ class Gemm final : public CudaKernel {
 
     ORT_ENFORCE(info.GetAttr<float>("alpha", &alpha_).IsOK());
     ORT_ENFORCE(info.GetAttr<float>("beta", &beta_).IsOK());
+
+    // We will support CublasLtMatmul only for half type for now
+    disable_cublaslt_matmul_ = !std::is_same<T, MLFloat16>::value ||
+                               ParseEnvironmentVariableWithDefault<bool>(matmul_detail::kDisableCublasLtMatmul, false);
   }
 
   Status ComputeInternal(OpKernelContext* context) const override;
@@ -31,6 +43,7 @@ class Gemm final : public CudaKernel {
   bool trans_B_;
   float alpha_;
   float beta_;
+  bool disable_cublaslt_matmul_;
 };
 }  // namespace cuda
 }  // namespace onnxruntime
