@@ -171,7 +171,7 @@ Status ConvTranspose<T>::DoConvTranspose(OpKernelContext* context, bool dynamic_
           thread_pool);
 
       if (p.X->Shape().NumDimensions() == 4) {
-        math::Col2im<T, CPUMathUtil, StorageOrder::NCHW>(
+        math::Col2imPar<T, StorageOrder::NCHW>(
             col_buffer_data,
             p.num_output_channels / conv_transpose_attrs_.group,
             p.Y->Shape()[2],
@@ -187,9 +187,10 @@ Status ConvTranspose<T>::DoConvTranspose(OpKernelContext* context, bool dynamic_
             p.strides[0],
             p.strides[1],
             Ydata + group_id * Y_offset,
-            &CPUMathUtil::Instance());
+            &CPUMathUtil::Instance(),
+            thread_pool);
       } else {
-        math::Col2imNd<T, CPUMathUtil, StorageOrder::NCHW>(
+        math::Col2imNdPar<T, StorageOrder::NCHW>(
             col_buffer_data,
             output_shape.GetDims().data(),
             p.input_shape.GetDims().data(),
@@ -201,7 +202,8 @@ Status ConvTranspose<T>::DoConvTranspose(OpKernelContext* context, bool dynamic_
             p.pads.data(),
             static_cast<int>(p.kernel_shape.size()),
             Ydata + group_id * Y_offset,
-            &CPUMathUtil::Instance());
+            &CPUMathUtil::Instance(),
+            thread_pool);
       }
     }
 
@@ -271,7 +273,7 @@ Status ConvTranspose<float>::DoConvTranspose(OpKernelContext* context, bool dyna
           thread_pool);
 
       if (p.X->Shape().NumDimensions() == 4) {
-        math::Col2im<float, CPUMathUtil, StorageOrder::NCHW>(
+        math::Col2imPar<float, StorageOrder::NCHW>(
             col_buffer_data,
             p.num_output_channels / conv_transpose_attrs_.group,
             p.Y->Shape()[2],
@@ -287,9 +289,11 @@ Status ConvTranspose<float>::DoConvTranspose(OpKernelContext* context, bool dyna
             p.strides[0],
             p.strides[1],
             Ydata + group_id * Y_offset,
-            &CPUMathUtil::Instance());
+            &CPUMathUtil::Instance(),
+            thread_pool);
+
       } else {
-        math::Col2imNd<float, CPUMathUtil, StorageOrder::NCHW>(
+        math::Col2imNdPar<float, StorageOrder::NCHW>(
             col_buffer_data,
             output_shape.GetDims().data(),
             p.input_shape.GetDims().data(),
@@ -301,7 +305,8 @@ Status ConvTranspose<float>::DoConvTranspose(OpKernelContext* context, bool dyna
             p.pads.data(),
             static_cast<int>(p.kernel_shape.size()),
             Ydata + group_id * Y_offset,
-            &CPUMathUtil::Instance());
+            &CPUMathUtil::Instance(),
+            thread_pool);
       }
     }
 
