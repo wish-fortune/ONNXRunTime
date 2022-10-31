@@ -493,17 +493,15 @@ TEST(SliceTest, Slice3D_WithPositiveAndNegativeSteps_SubsetOfAxes_2) {
 }
 
 // Slice for Reversing
-// With numeric_limit_max, it means slice to the end of a dimension
-// (whichever direction we are stepping)
-TEST(SliceTest, Slice1D_ReverseAllAxes_1) {
+TEST(SliceTest, Slice1D_ReverseAllAxes_EmptyResult) {
   RunSliceTest<float>({4},
                       {1.0f, 2.0f, 3.0f, 4.0f},
                       {-1},
                       {std::numeric_limits<int32_t>::max()},
                       {0},
                       {-1},
-                      {4},
-                      {4.0f, 3.0f, 2.0f, 1.0f},
+                      {0},
+                      {},
                       true);
 }
 
@@ -537,7 +535,7 @@ TEST(SliceTest, Slice2D_ReverseAllAxes) {
   RunSliceTest<float>({2, 2},
                       {1.0f, 2.0f, 3.0f, 4.0f},
                       {-1, -1},
-                      {std::numeric_limits<int64_t>::max(), std::numeric_limits<int64_t>::max()},
+                      {std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::min()},  // Slice till the beginning
                       {0, 1},
                       {-1, -1},
                       {2, 2},
@@ -549,8 +547,8 @@ TEST(SliceTest, Slice2D_ReverseSubsetOfAxes_1) {
   RunSliceTest<float>({2, 2},
                       {1.0f, 2.0f, 3.0f, 4.0f},
                       {-1},
-                      {std::numeric_limits<int64_t>::max()},
-                      {1},  // axis = 1 only
+                      {std::numeric_limits<int64_t>::min()},  // Slice till the beginning
+                      {1},                                    // axis = 1 only
                       {-1},
                       {2, 2},
                       {2.0f, 1.0f, 4.0f, 3.0f},
@@ -561,7 +559,7 @@ TEST(SliceTest, Slice2D_ReverseSubsetOfAxes_2) {
   RunSliceTest<float>({2, 2},
                       {1.0f, 2.0f, 3.0f, 4.0f},
                       {-1},
-                      {std::numeric_limits<int64_t>::max()},  // end of dimension
+                      {std::numeric_limits<int64_t>::min()},  // Slice till the beginning
                       {0},                                    // axis = 0 only
                       {-1},
                       {2, 2},
@@ -605,8 +603,8 @@ TEST(SliceTest, Slice2D_ReverseSubsetOfNegAxes_1) {
   RunSliceTest<float>({2, 2},
                       {1.0f, 2.0f, 3.0f, 4.0f},
                       {-1},
-                      {std::numeric_limits<int64_t>::max()},
-                      {-1},  // axis = -1 only
+                      {std::numeric_limits<int64_t>::min()},  // Slice till the beginning
+                      {-1},                                   // axis = -1 only
                       {-1},
                       {2, 2},
                       {2.0f, 1.0f, 4.0f, 3.0f},
