@@ -7,19 +7,14 @@
 # --------------------------------------------------------------------------
 
 import unittest
+from pathlib import Path
 
 import numpy as np
 import onnx
 from onnx import TensorProto, helper, numpy_helper
-from op_test_utils import (
-    TestDataFeeds,
-    check_model_correctness,
-    check_op_type_count,
-    check_op_type_order,
-    check_qtype_by_node_type,
-)
+from op_test_utils import TestCaseTempDir, check_model_correctness, check_op_type_count, check_qtype_by_node_type
 
-from onnxruntime.quantization import DynamicQuantConfig, QuantType, quantize, quantize_dynamic
+from onnxruntime.quantization import DynamicQuantConfig, QuantFormat, QuantType, quantize, quantize_dynamic
 
 
 def generate_input_initializer(tensor_shape, tensor_dtype, input_name):
@@ -31,7 +26,14 @@ def generate_input_initializer(tensor_shape, tensor_dtype, input_name):
     return init
 
 
-class TestONNXModel(unittest.TestCase):
+class TestONNXModel(TestCaseTempDir):
+    @classmethod
+    def setUpClass(cls):
+        super(TestONNXModel, cls).setUpClass()
+        np.random.seed(1)
+        cls.model_fp32_path = Path(cls._tmp_model_dir.name).joinpath("conv_bias.fp32.onnx").as_posix()
+        cls.construct_model(cls, cls.model_fp32_path)
+
     def construct_model(self, model_path):
         #       input
         #      /    |
@@ -65,44 +67,92 @@ class TestONNXModel(unittest.TestCase):
         model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
         onnx.save(model, model_path)
 
-    def dynamic_quant_conv_test(self, weight_type, extra_options={}, use_quant_config=False):
-        np.random.seed(1)
-        model_fp32_path = "conv_bias.fp32.onnx"
-        self.construct_model(model_fp32_path)
-
+    def dyn_qop_conv_bias_test(self, weight_type, extra_options=None, use_quant_config=False):
         activation_proto_qtype = TensorProto.UINT8
         activation_type_str = "u8"
         weight_type_str = "u8" if (weight_type == QuantType.QUInt8) else "s8"
-        model_int8_path = "conv_bias.quant.{}{}.onnx".format(activation_type_str, weight_type_str)
+        conf_type_str = ".conf" if (use_quant_config) else ""
+        model_qop_path = (
+            Path(self._tmp_model_dir.name)
+            .joinpath(f"conv_bias.qop.{activation_type_str}{weight_type_str}{conf_type_str}.onnx")
+            .as_posix()
+        )
 
         if use_quant_config:
             quant_config = DynamicQuantConfig(weight_type=weight_type, extra_options=extra_options)
-            quantize(model_fp32_path, model_int8_path, quant_config)
+            quantize(self.model_fp32_path, model_qop_path, quant_config)
         else:
             quantize_dynamic(
-                model_fp32_path,
-                model_int8_path,
+                self.model_fp32_path,
+                model_qop_path,
                 weight_type=weight_type,
                 extra_options=extra_options,
             )
         quant_nodes = {"ConvInteger": 2}
-        check_op_type_count(self, model_int8_path, **quant_nodes)
+        check_op_type_count(self, model_qop_path, **quant_nodes)
         qnode_io_qtypes = {"ConvInteger": [["i", 2, activation_proto_qtype]]}
-        check_qtype_by_node_type(self, model_int8_path, qnode_io_qtypes)
+        check_qtype_by_node_type(self, model_qop_path, qnode_io_qtypes)
         check_model_correctness(
             self,
-            model_fp32_path,
-            model_int8_path,
+            self.model_fp32_path,
+            model_qop_path,
             {"input": np.random.rand(4, 2, 8, 8).astype(np.float32)},
         )
 
-    def test_quant_conv(self):
+    def dyn_qdq_conv_bias_test(self, activation_type, weight_type, extra_options=None):
+        activation_proto_qtype = TensorProto.UINT8 if activation_type == QuantType.QUInt8 else TensorProto.INT8
+        activation_type_str = "u8" if (activation_type == QuantType.QUInt8) else "s8"
+        weight_type_str = "u8" if (weight_type == QuantType.QUInt8) else "s8"
+        model_qdq_path = (
+            Path(self._tmp_model_dir.name)
+            .joinpath(f"conv_bias.qdq.{activation_type_str}{weight_type_str}.onnx")
+            .as_posix()
+        )
+
+        quantize_dynamic(
+            self.model_fp32_path,
+            model_qdq_path,
+            quant_format=QuantFormat.QDQ,
+            weight_type=weight_type,
+            activation_type=activation_type,
+            extra_options=extra_options,
+        )
+        quant_nodes = {"ComputeQuantizationParameters": 1, "QuantizeLinear": 1, "DequantizeLinear": 3, "Conv": 2}
+        check_op_type_count(self, model_qdq_path, **quant_nodes)
+        # TODO: check weight type
+        qnode_io_qtypes = {
+            "QuantizeLinear": [
+                ["i", 2, activation_proto_qtype],
+                ["o", 0, activation_proto_qtype],
+            ],
+        }
+        check_qtype_by_node_type(self, model_qdq_path, qnode_io_qtypes)
+        check_model_correctness(
+            self,
+            self.model_fp32_path,
+            model_qdq_path,
+            {"input": np.random.rand(4, 2, 8, 8).astype(np.float32)},
+        )
+
+    def test_dyn_qop_conv_bias_u8u8(self):
         for use_quant_config in [True, False]:
-            self.dynamic_quant_conv_test(QuantType.QUInt8, extra_options={}, use_quant_config=use_quant_config)
+            self.dyn_qop_conv_bias_test(QuantType.QUInt8, use_quant_config=use_quant_config)
 
     # TODO: uncomment following after ConvInteger s8 supportted
-    # def test_quant_conv_s8s8(self):
-    #    self.dynamic_quant_conv_test(QuantType.QInt8, extra_options={'ActivationSymmetric': True})
+    # def test_dyn_qop_conv_bias_s8s8(self):
+    #    self.dyn_qop_conv_bias_test(QuantType.QInt8, extra_options={"ActivationSymmetric": True})
+
+    def test_dyn_qdq_conv_bias_u8u8(self):
+        self.dyn_qdq_conv_bias_test(QuantType.QUInt8, QuantType.QUInt8)
+
+    def test_dyn_qdq_conv_bias_u8s8(self):
+        self.dyn_qdq_conv_bias_test(QuantType.QUInt8, QuantType.QInt8)
+
+    def test_dyn_qdq_conv_bias_s8u8(self):
+        self.dyn_qdq_conv_bias_test(QuantType.QInt8, QuantType.QUInt8)
+
+    def test_dyn_qdq_conv_bias_s8s8(self):
+        self.dyn_qdq_conv_bias_test(QuantType.QInt8, QuantType.QInt8)
 
 
 if __name__ == "__main__":

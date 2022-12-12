@@ -14,29 +14,25 @@ import numpy as np
 import onnx
 from onnx import TensorProto, helper, numpy_helper
 from op_test_utils import (
-    TestDataFeeds,
+    TestCaseTempDir,
     check_model_correctness,
     check_op_type_count,
     check_op_type_order,
     create_clip_node,
+    input_feeds_negone_zero_one,
 )
 
-from onnxruntime.quantization import QDQQuantizer, QuantFormat, QuantizationMode, QuantType, quantize_static
+from onnxruntime.quantization import (
+    QDQQuantizer,
+    QuantFormat,
+    QuantizationMode,
+    QuantType,
+    quantize_dynamic,
+    quantize_static,
+)
 
 
-class TestQDQFormat(unittest.TestCase):
-    def input_feeds(self, n, name2shape):
-        input_data_list = []
-        for i in range(n):
-            inputs = {}
-            for name, shape in name2shape.items():
-                inputs.update({name: np.random.randint(-1, 2, shape).astype(np.float32)})
-            input_data_list.extend([inputs])
-        dr = TestDataFeeds(input_data_list)
-        return dr
-
-
-class TestQDQExtraOptions(unittest.TestCase):
+class TestQDQExtraOptions(TestCaseTempDir):
     def test_qdq_extra_options(self):
         #   (input)
         #      |
@@ -70,7 +66,8 @@ class TestQDQExtraOptions(unittest.TestCase):
             initializer=initializers,
         )
         model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-        test_model_path = "./test_qdq_finetune.onnx"
+        test_model_path = "test_qdq_finetune.onnx"
+        test_model_path = Path(self._tmp_model_dir.name).joinpath(test_model_path).as_posix()
         onnx.save(model, test_model_path)
 
         compute_range = {
@@ -105,7 +102,8 @@ class TestQDQExtraOptions(unittest.TestCase):
             },
         )  # extra_options
         quantizer.quantize_model()
-        qdq_model_path = "./test_qdq_finetune_qdq.onnx"
+        qdq_model_path = "test_qdq_finetune_qdq.onnx"
+        qdq_model_path = Path(self._tmp_model_dir.name).joinpath(qdq_model_path).as_posix()
         quantizer.model.save_model_to_file(qdq_model_path, False)
 
         # QDQ pair should be added to Add1 but not Add2
@@ -132,7 +130,7 @@ class TestQDQExtraOptions(unittest.TestCase):
         self.assertTrue(qdq_added_to_node_output_flag)
 
     def test_qdq_extra_options_2(self):
-        #         (input)
+        #        (input)
         #           |
         #          Add
         #       /   |   \
@@ -168,7 +166,9 @@ class TestQDQExtraOptions(unittest.TestCase):
             initializer=initializers,
         )
         model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-        test_model_path = "./test_qdq_finetune_2.onnx"
+        test_model_path = "test_qdq_finetune_2.onnx"
+        test_model_path = Path(self._tmp_model_dir.name).joinpath(test_model_path).as_posix()
+
         onnx.save(model, test_model_path)
 
         compute_range = {
@@ -207,7 +207,8 @@ class TestQDQExtraOptions(unittest.TestCase):
             },
         )  # extra_options
         quantizer.quantize_model()
-        qdq_model_path = "./test_qdq_finetune_qdq_2.onnx"
+        qdq_model_path = "test_qdq_finetune_qdq_2.onnx"
+        qdq_model_path = Path(self._tmp_model_dir.name).joinpath(qdq_model_path).as_posix()
         quantizer.model.save_model_to_file(qdq_model_path, False)
 
         # Three dedicated QDQ pair should be generated and feed into each MatMul node
@@ -235,7 +236,7 @@ class TestQDQExtraOptions(unittest.TestCase):
                 )
 
 
-class TestQDQFormatConv(TestQDQFormat):
+class TestQDQFormatConv(TestCaseTempDir):
     def check_per_channel_counts(self, model_path, channel_count: int, axis: int = 0):
         model = onnx.load(Path(model_path))
         for initializer in model.graph.initializer:
@@ -288,11 +289,17 @@ class TestQDQFormatConv(TestQDQFormat):
     def verify_quantize_conv(self, has_bias, per_channel, is_quant_type_int8=False):
         np.random.seed(1)
         model_fp32_path = "conv_fp32.{}.{}.onnx".format(has_bias, per_channel)
+        model_fp32_path = Path(self._tmp_model_dir.name).joinpath(model_fp32_path).as_posix()
         model_int8_qdq_path = "conv_quant_qdq.{}.{}.onnx".format(has_bias, per_channel)
+        model_int8_qdq_path = Path(self._tmp_model_dir.name).joinpath(model_int8_qdq_path).as_posix()
+        model_int8_qdq_dyn_path = "conv_quant_qdq_dyn.{}.{}.onnx".format(has_bias, per_channel)
+        model_int8_qdq_dyn_path = Path(self._tmp_model_dir.name).joinpath(model_int8_qdq_dyn_path).as_posix()
         model_int8_qop_path = "conv_quant_qop.{}.{}.onnx".format(has_bias, per_channel)
+        model_int8_qop_path = Path(self._tmp_model_dir.name).joinpath(model_int8_qop_path).as_posix()
         channel_count = 16
-        data_reader = self.input_feeds(1, {"input": [1, 8, 33, 33]})
+        data_reader = input_feeds_negone_zero_one(1, {"input": [1, 8, 33, 33]})
         self.construct_model_conv(model_fp32_path, [1, 8, 33, 33], [channel_count, 8, 3, 3], [1, 16, 31, 31], has_bias)
+        # Test QDQ Static
         quantize_static(
             model_fp32_path,
             model_int8_qdq_path,
@@ -314,7 +321,25 @@ class TestQDQFormatConv(TestQDQFormat):
         if per_channel:
             self.check_per_channel_counts(model_int8_qdq_path, channel_count)
         check_model_correctness(self, model_fp32_path, model_int8_qdq_path, data_reader.get_next())
-
+        # Test QDQ Dynamic
+        quantize_dynamic(
+            model_fp32_path,
+            model_int8_qdq_dyn_path,
+            quant_format=QuantFormat.QDQ,
+            per_channel=per_channel,
+            reduce_range=per_channel,
+            activation_type=QuantType.QInt8 if is_quant_type_int8 else QuantType.QUInt8,
+            weight_type=QuantType.QInt8 if is_quant_type_int8 else QuantType.QUInt8,
+        )
+        data_reader.rewind()
+        qdq_nodes = {
+            "Conv": 1,
+            "QuantizeLinear": 1,
+            "DequantizeLinear": 2,
+        }
+        check_op_type_count(self, model_int8_qdq_dyn_path, **qdq_nodes)
+        check_model_correctness(self, model_fp32_path, model_int8_qdq_dyn_path, data_reader.get_next())
+        # Test QOp Static
         data_reader.rewind()
         quantize_static(
             model_fp32_path,
@@ -343,7 +368,7 @@ class TestQDQFormatConv(TestQDQFormat):
         self.verify_quantize_conv(True, True, False)  # has_bias:True, per_channel:True, is_quant_type_int8:False
 
 
-class TestQDQFormatConvClip(TestQDQFormat):
+class TestQDQFormatConvClip(TestCaseTempDir):
     def construct_model_conv_clip(self, output_model_path, input_shape, weight_shape, output_shape):
         #    (input)
         #      |
@@ -397,10 +422,16 @@ class TestQDQFormatConvClip(TestQDQFormat):
     def verify(self, per_channel, is_quant_type_int8):
         np.random.seed(1)
         model_fp32_path = "conv_clip_fp32.{}.onnx".format(per_channel)
+        model_fp32_path = Path(self._tmp_model_dir.name).joinpath(model_fp32_path).as_posix()
         model_int8_qdq_path = "conv_clip_quant_qdq.{}.onnx".format(per_channel)
+        model_int8_qdq_path = Path(self._tmp_model_dir.name).joinpath(model_int8_qdq_path).as_posix()
+        model_int8_qdq_dyn_path = "conv_clip_quant_qdq_dyn.{}.onnx".format(per_channel)
+        model_int8_qdq_dyn_path = Path(self._tmp_model_dir.name).joinpath(model_int8_qdq_dyn_path).as_posix()
         model_int8_qop_path = "conv_clip_quant_qop.{}.onnx".format(per_channel)
-        data_reader = self.input_feeds(1, {"input": [1, 8, 33, 33]})
+        model_int8_qop_path = Path(self._tmp_model_dir.name).joinpath(model_int8_qop_path).as_posix()
+        data_reader = input_feeds_negone_zero_one(1, {"input": [1, 8, 33, 33]})
         self.construct_model_conv_clip(model_fp32_path, [1, 8, 33, 33], [16, 8, 3, 3], [15376])
+        # Test QDQ Static
         quantize_static(
             model_fp32_path,
             model_int8_qdq_path,
@@ -430,7 +461,49 @@ class TestQDQFormatConvClip(TestQDQFormat):
             ],
         )
         check_model_correctness(self, model_fp32_path, model_int8_qdq_path, data_reader.get_next())
-
+        # Test QDQ Dynamic
+        quantize_dynamic(
+            model_fp32_path,
+            model_int8_qdq_dyn_path,
+            quant_format=QuantFormat.QDQ,
+            per_channel=per_channel,
+            reduce_range=per_channel,
+            activation_type=QuantType.QInt8 if is_quant_type_int8 else QuantType.QUInt8,
+            weight_type=QuantType.QInt8 if is_quant_type_int8 else QuantType.QUInt8,
+            op_types_to_quantize=["Conv", "Reshape"],
+        )
+        # topo sort check
+        if is_quant_type_int8:
+            check_op_type_order(
+                self,
+                model_int8_qdq_dyn_path,
+                [
+                    "DequantizeLinear",
+                    "ComputeQuantizationParameters",
+                    "QuantizeLinear",
+                    "DequantizeLinear",
+                    "Conv",
+                    "Clip",
+                    "Reshape",
+                ],
+            )
+        else:
+            check_op_type_order(
+                self,
+                model_int8_qdq_dyn_path,
+                [
+                    "DequantizeLinear",
+                    "ComputeQuantizationParameters",
+                    "QuantizeLinear",
+                    "DequantizeLinear",
+                    "Conv",
+                    "Clip",
+                    "Reshape",
+                ],
+            )
+        data_reader.rewind()
+        check_model_correctness(self, model_fp32_path, model_int8_qdq_dyn_path, data_reader.get_next())
+        # Test QOp Static
         data_reader.rewind()
         quantize_static(
             model_fp32_path,
@@ -451,7 +524,6 @@ class TestQDQFormatConvClip(TestQDQFormat):
     def test_quantize_conv_without_bias(self):
         # only test cases per_channel=True and reduce_range=True to avoid saturation on avx2 and avx512 for weight type int8
         self.verify(True, True)  # per_channel:False, is_quant_type_int8:True
-
         self.verify(False, False)  # per_channel:False, is_quant_type_int8:False
         self.verify(True, False)  # per_channel:True, is_quant_type_int8:False
 
@@ -515,7 +587,7 @@ def construct_relu_conv_model(test_model_path: str) -> None:
     onnx.save(model, test_model_path)
 
 
-class TestQDQFormatConvRelu(TestQDQFormat):
+class TestQDQFormatConvRelu(TestCaseTempDir):
     @classmethod
     def setUpClass(cls):
         cls._tmp_model_dir = tempfile.TemporaryDirectory(prefix="test_qdq_format_conv_relu")
@@ -566,11 +638,17 @@ class TestQDQFormatConvRelu(TestQDQFormat):
 
     def verify(self, per_channel, is_quant_type_int8):
         np.random.seed(1)
-        model_fp32_path = str(Path(self._tmp_model_dir.name) / "conv_relu_fp32.{}.onnx".format(per_channel))
-        model_int8_qdq_path = str(Path(self._tmp_model_dir.name) / "conv_relu_quant_qdq.{}.onnx".format(per_channel))
-        model_int8_qop_path = str(Path(self._tmp_model_dir.name) / "conv_relu_quant_qop.{}.onnx".format(per_channel))
-        data_reader = self.input_feeds(1, {"input": [1, 8, 33, 33]})
+        model_fp32_path = "conv_relu_fp32.{}.onnx".format(per_channel)
+        model_fp32_path = Path(self._tmp_model_dir.name).joinpath(model_fp32_path).as_posix()
+        model_int8_qdq_path = "conv_relu_quant_qdq.{}.onnx".format(per_channel)
+        model_int8_qdq_path = Path(self._tmp_model_dir.name).joinpath(model_int8_qdq_path).as_posix()
+        model_int8_qdq_dyn_path = "conv_relu_quant_qdq_dyn.{}.onnx".format(per_channel)
+        model_int8_qdq_dyn_path = Path(self._tmp_model_dir.name).joinpath(model_int8_qdq_dyn_path).as_posix()
+        model_int8_qop_path = "conv_relu_quant_qop.{}.onnx".format(per_channel)
+        model_int8_qop_path = Path(self._tmp_model_dir.name).joinpath(model_int8_qop_path).as_posix()
+        data_reader = input_feeds_negone_zero_one(1, {"input": [1, 8, 33, 33]})
         self.construct_model_conv_relu(model_fp32_path, [1, 8, 33, 33], [16, 8, 3, 3], [1, 16, 31, 31])
+        # Test QDQ Static
         quantize_static(
             model_fp32_path,
             model_int8_qdq_path,
@@ -597,7 +675,47 @@ class TestQDQFormatConvRelu(TestQDQFormat):
             ],
         )
         check_model_correctness(self, model_fp32_path, model_int8_qdq_path, data_reader.get_next())
-
+        # Test QDQ Dynamic
+        quantize_dynamic(
+            model_fp32_path,
+            model_int8_qdq_dyn_path,
+            quant_format=QuantFormat.QDQ,
+            per_channel=per_channel,
+            reduce_range=per_channel,
+            activation_type=QuantType.QInt8 if is_quant_type_int8 else QuantType.QUInt8,
+            weight_type=QuantType.QInt8 if is_quant_type_int8 else QuantType.QUInt8,
+            op_types_to_quantize=["Conv", "Relu"],
+        )
+        data_reader.rewind()
+        # topo sort check
+        if is_quant_type_int8:
+            check_op_type_order(
+                self,
+                model_int8_qdq_dyn_path,
+                [
+                    "DequantizeLinear",
+                    "ComputeQuantizationParameters",
+                    "QuantizeLinear",
+                    "DequantizeLinear",
+                    "Conv",
+                    "Relu",
+                ],
+            )
+        else:
+            check_op_type_order(
+                self,
+                model_int8_qdq_dyn_path,
+                [
+                    "DequantizeLinear",
+                    "ComputeQuantizationParameters",
+                    "QuantizeLinear",
+                    "DequantizeLinear",
+                    "Conv",
+                    "Relu",
+                ],
+            )
+        check_model_correctness(self, model_fp32_path, model_int8_qdq_dyn_path, data_reader.get_next())
+        # Test QOp Static
         data_reader.rewind()
         quantize_static(
             model_fp32_path,
@@ -618,14 +736,13 @@ class TestQDQFormatConvRelu(TestQDQFormat):
     def test_quantize_conv_without_bias(self):
         # only test cases per_channel=True and reduce_range=True to avoid saturation on avx2 and avx512 for weight type int8
         self.verify(True, True)  # per_channel:False, is_quant_type_int8:True
-
         self.verify(False, False)  # per_channel:False, is_quant_type_int8:False
         self.verify(True, False)  # per_channel:True, is_quant_type_int8:False
 
     def test_quantize_relu_conv(self):
         float_model_path = str(Path(self._tmp_model_dir.name) / "float_relu_convs_model.onnx")
         construct_relu_conv_model(float_model_path)
-        data_reader = self.input_feeds(2, {"input": [1, 3, 1, 3]})
+        data_reader = input_feeds_negone_zero_one(2, {"input": [1, 3, 1, 3]})
 
         qdq_model_path = str(Path(self._tmp_model_dir.name) / "qdq_relu_convs_model.onnx")
         quantize_static(
@@ -641,7 +758,7 @@ class TestQDQFormatConvRelu(TestQDQFormat):
         )
 
 
-class TestQDQRemovableActivation(TestQDQFormat):
+class TestQDQRemovableActivation(TestCaseTempDir):
     @classmethod
     def setUpClass(cls):
         cls._tmp_model_dir = tempfile.TemporaryDirectory(prefix="ort.quant.activation")
@@ -688,7 +805,7 @@ class TestQDQRemovableActivation(TestQDQFormat):
     def test_activation_only(self):
         float_model_path = str(Path(self._tmp_model_dir.name) / "float_relu_convs_model.onnx")
         self.construct_model_clip_relu(float_model_path, [1, 3, 1, 3], [1, 3, 1, 3])
-        data_reader = self.input_feeds(2, {"input": [1, 3, 1, 3]})
+        data_reader = input_feeds_negone_zero_one(2, {"input": [1, 3, 1, 3]})
 
         qdq_model_path = str(Path(self._tmp_model_dir.name) / "qdq_relu_convs_model.onnx")
         quantize_static(float_model_path, qdq_model_path, data_reader, optimize_model=False)

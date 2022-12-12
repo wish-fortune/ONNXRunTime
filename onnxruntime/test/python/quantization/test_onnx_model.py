@@ -7,13 +7,13 @@
 # --------------------------------------------------------------------------
 
 import unittest
+from pathlib import Path
 
 import numpy as np
 import onnx
 from onnx import TensorProto, helper, numpy_helper
-from op_test_utils import TestDataFeeds, check_model_correctness, check_op_type_count, check_op_type_order
+from op_test_utils import TestCaseTempDir, check_op_type_order
 
-import onnxruntime
 from onnxruntime.quantization.onnx_model import ONNXModel
 
 
@@ -26,7 +26,7 @@ def generate_input_initializer(tensor_shape, tensor_dtype, input_name):
     return init
 
 
-class TestONNXModel(unittest.TestCase):
+class TestONNXModel(TestCaseTempDir):
     def construct_model(self, model_path):
         #    (input)
         #       |
@@ -102,7 +102,7 @@ class TestONNXModel(unittest.TestCase):
         onnx.save(model, model_path)
 
     def test_topo_sort(self):
-        test_model_path = "onnx_model_topo_sort.onnx"
+        test_model_path = Path(self._tmp_model_dir.name).joinpath("onnx_model_topo_sort.onnx").as_posix()
         self.construct_model(test_model_path)
         onnx_model = ONNXModel(onnx.load(test_model_path))
         check_op_type_order(self, onnx_model.model, ["Conv", "Relu", "Conv", "GRU", "Add"])
@@ -110,7 +110,7 @@ class TestONNXModel(unittest.TestCase):
         check_op_type_order(self, onnx_model.model, ["GRU", "Conv", "Conv", "Relu", "Add"])
 
     def test_topo_sort_constant(self):
-        test_model_path = "onnx_model_topo_sort_constant.onnx"
+        test_model_path = Path(self._tmp_model_dir.name).joinpath("onnx_model_topo_sort_constant.onnx").as_posix()
         self.construct_model_Constant(test_model_path)
         onnx_model = ONNXModel(onnx.load(test_model_path))
         check_op_type_order(self, onnx_model.model, ["Add", "Constant"])

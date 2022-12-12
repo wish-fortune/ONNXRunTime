@@ -34,9 +34,9 @@ class ConvInteger(QuantOperatorBase):
         # Add tensors for the shape to be reshaped to
         weight = find_by_name(node.input[1], model.initializer())
         if weight is None:
-            raise ValueError("Expected {} to be an initializer".format(node.input[1]))
+            raise ValueError(f"Expected {node.input[1]} to be an initializer")
 
-        # Add reshape for correct broadcase
+        # Add reshape for correct broadcast
         output = node.output[0]
         reshape_input_data = node.input[2]  # bias of Conv
         reshape_input_shape = output + "_bias_reshape_shape"
@@ -248,6 +248,14 @@ class QDQConv(QDQOperatorBase):
             self.quantizer.quantize_weight_tensor_per_channel(node.input[1], 0)
         else:
             self.quantizer.quantize_weight_tensor(node.input[1])
+
+        # TODO TESTING BIAS
+        # has_bias = len(node.input) == 3
+        # scaled_output_name = node.output[0] if not has_bias else node.output[0] + "quant_scaled_output"
+
+        # if has_bias:
+        #     self.add_bias(nodes, scaled_output_name)
+        # TODO Weirdo
 
         if len(node.input) == 3:
             self.quantizer.quantize_bias_tensor(node.input[2], node.input[0], node.input[1])

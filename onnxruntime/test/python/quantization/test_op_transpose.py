@@ -7,32 +7,24 @@
 # --------------------------------------------------------------------------
 
 import unittest
+from pathlib import Path
 
 import numpy as np
 import onnx
 from onnx import TensorProto, helper
 from op_test_utils import (
-    TestDataFeeds,
+    TestCaseTempDir,
     check_model_correctness,
     check_op_nodes,
     check_op_type_count,
     check_qtype_by_node_type,
+    input_feeds_negone_zero_one,
 )
 
-from onnxruntime.quantization import QuantFormat, QuantType, quantize_static
+from onnxruntime.quantization import QuantFormat, QuantType, quantize_dynamic, quantize_static
 
 
-class TestOpTranspose(unittest.TestCase):
-    def input_feeds(self, n, name2shape):
-        input_data_list = []
-        for i in range(n):
-            inputs = {}
-            for name, shape in name2shape.items():
-                inputs.update({name: np.random.randint(-1, 2, shape).astype(np.float32)})
-            input_data_list.extend([inputs])
-        dr = TestDataFeeds(input_data_list)
-        return dr
-
+class TestOpTranspose(TestCaseTempDir):
     def construct_model_matmul_transpose(self, output_model_path, input_shape, weight_shape, output_shape):
         #    (input)
         #      |
@@ -80,16 +72,21 @@ class TestOpTranspose(unittest.TestCase):
     def quantize_transpose_test(self, activation_type, weight_type, extra_options={}):
         np.random.seed(1)
         model_fp32_path = "transpose_fp32.onnx"
+        model_fp32_path = Path(self._tmp_model_dir.name).joinpath(model_fp32_path).as_posix()
         self.construct_model_matmul_transpose(model_fp32_path, [3, 7], [7, 5], [5, 3])
 
         activation_proto_qtype = TensorProto.UINT8 if activation_type == QuantType.QUInt8 else TensorProto.INT8
         activation_type_str = "u8" if (activation_type == QuantType.QUInt8) else "s8"
         weight_type_str = "u8" if (weight_type == QuantType.QUInt8) else "s8"
         model_uint8_path = "transpose_{}{}.onnx".format(activation_type_str, weight_type_str)
+        model_uint8_path = Path(self._tmp_model_dir.name).joinpath(model_uint8_path).as_posix()
         model_uint8_qdq_path = "transpose_{}{}_qdq.onnx".format(activation_type_str, weight_type_str)
+        model_uint8_qdq_path = Path(self._tmp_model_dir.name).joinpath(model_uint8_qdq_path).as_posix()
+        model_uint8_qdq_dyn_path = "transpose_{}{}_qdq_dyn.onnx".format(activation_type_str, weight_type_str)
+        model_uint8_qdq_dyn_path = Path(self._tmp_model_dir.name).joinpath(model_uint8_qdq_dyn_path).as_posix()
 
         # Verify QOperator model
-        data_reader = self.input_feeds(1, {"input": [3, 7]})
+        data_reader = input_feeds_negone_zero_one(1, {"input": [3, 7]})
         quantize_static(
             model_fp32_path,
             model_uint8_path,
@@ -150,6 +147,34 @@ class TestOpTranspose(unittest.TestCase):
         check_qtype_by_node_type(self, model_uint8_qdq_path, qnode_io_qtypes)
         data_reader.rewind()
         check_model_correctness(self, model_fp32_path, model_uint8_qdq_path, data_reader.get_next())
+
+        # Verify QDQ Dynamic model
+        data_reader.rewind()
+        quantize_dynamic(
+            model_fp32_path,
+            model_uint8_qdq_dyn_path,
+            quant_format=QuantFormat.QDQ,
+            activation_type=activation_type,
+            weight_type=weight_type,
+            extra_options=extra_options,
+            op_types_to_quantize=["MatMul", "Transpose"],
+        )
+        qdqnode_counts = {
+            "MatMul": 1,
+            "QuantizeLinear": 1,
+            "DequantizeLinear": 2,
+            "Transpose": 1,
+        }
+        check_op_type_count(self, model_uint8_qdq_dyn_path, **qdqnode_counts)
+        qnode_io_qtypes = {
+            "QuantizeLinear": [
+                ["i", 2, activation_proto_qtype],
+                ["o", 0, activation_proto_qtype],
+            ]
+        }
+        check_qtype_by_node_type(self, model_uint8_qdq_dyn_path, qnode_io_qtypes)
+        data_reader.rewind()
+        check_model_correctness(self, model_fp32_path, model_uint8_qdq_dyn_path, data_reader.get_next())
 
     def test_quantize_transpose(self):
         self.quantize_transpose_test(QuantType.QUInt8, QuantType.QUInt8)

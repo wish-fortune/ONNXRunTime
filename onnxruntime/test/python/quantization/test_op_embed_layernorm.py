@@ -7,19 +7,20 @@
 # --------------------------------------------------------------------------
 
 import unittest
+from pathlib import Path
 
 import numpy as np
 import onnx
 from onnx import TensorProto, helper
-from op_test_utils import TestDataFeeds, check_model_correctness, check_op_type_count
+from op_test_utils import TestCaseTempDir, TestDataFeeds, check_model_correctness, check_op_type_count
 
-from onnxruntime.quantization import quantize_dynamic
+from onnxruntime.quantization import QuantFormat, quantize_dynamic
 
 
-class TestOpEmbedLayerNormalization(unittest.TestCase):
+class TestOpEmbedLayerNormalization(TestCaseTempDir):
     def input_feeds_int32(self, n, name2shape):
         input_data_list = []
-        for i in range(n):
+        for _ in range(n):
             inputs = {}
             for name, shape in name2shape.items():
                 inputs.update({name: np.ones(shape).astype(np.int32)})
@@ -112,7 +113,11 @@ class TestOpEmbedLayerNormalization(unittest.TestCase):
         sequence_length = 4
 
         model_f32_path = "test_embed_layer_norm_unit_test_batch1.onnx"
+        model_f32_path = Path(self._tmp_model_dir.name).joinpath(model_f32_path).as_posix()
         model_uint8_path = "test_embed_layer_norm_unit_test_batch1_uint8.onnx"
+        model_uint8_path = Path(self._tmp_model_dir.name).joinpath(model_uint8_path).as_posix()
+        model_uint8_qop_path = "test_embed_layer_norm_unit_test_batch1_uint8_qop.onnx"
+        model_uint8_qop_path = Path(self._tmp_model_dir.name).joinpath(model_uint8_qop_path).as_posix()
 
         self.construct_model(batch, hidden_size, sequence_length, model_f32_path)
 
@@ -124,14 +129,33 @@ class TestOpEmbedLayerNormalization(unittest.TestCase):
             },
         )
 
-        quantize_dynamic(model_f32_path, model_uint8_path)
-
+        # Test QDQ Dynamic
+        quantize_dynamic(
+            model_f32_path,
+            model_uint8_path,
+            quant_format=QuantFormat.QDQ,
+        )
         # Quantization should not have any DequantizeLinear nodes:
-        qnode_counts = {"DequantizeLinear": 0, "QEmbedLayerNormalization": 1}
+        qnode_counts = {"DequantizeLinear": 0, "EmbedLayerNormalization": 1}
         check_op_type_count(self, model_uint8_path, **qnode_counts)
         data_reader.rewind()
-
         check_model_correctness(self, model_f32_path, model_uint8_path, data_reader.get_next())
+
+        data_reader = self.input_feeds_int32(
+            1,
+            {
+                "input_ids": [batch, sequence_length],
+                "segment_ids": [batch, sequence_length],
+            },
+        )
+
+        # Test QOperator Dynamic
+        quantize_dynamic(model_f32_path, model_uint8_qop_path)
+        # Quantization should not have any DequantizeLinear nodes:
+        qnode_counts = {"DequantizeLinear": 0, "QEmbedLayerNormalization": 1}
+        check_op_type_count(self, model_uint8_qop_path, **qnode_counts)
+        data_reader.rewind()
+        check_model_correctness(self, model_f32_path, model_uint8_qop_path, data_reader.get_next())
 
     def test_quantize_batch_size_2(self):
         batch = 2
@@ -139,7 +163,11 @@ class TestOpEmbedLayerNormalization(unittest.TestCase):
         sequence_length = 4
 
         model_f32_path = "test_embed_layer_norm_unit_test_batch2.onnx"
+        model_f32_path = Path(self._tmp_model_dir.name).joinpath(model_f32_path).as_posix()
         model_uint8_path = "test_embed_layer_norm_unit_test_batch2_uint8.onnx"
+        model_uint8_path = Path(self._tmp_model_dir.name).joinpath(model_uint8_path).as_posix()
+        model_uint8_qop_path = "test_embed_layer_norm_unit_test_batch1_uint8_qop.onnx"
+        model_uint8_qop_path = Path(self._tmp_model_dir.name).joinpath(model_uint8_qop_path).as_posix()
 
         self.construct_model(batch, hidden_size, sequence_length, model_f32_path)
 
@@ -151,14 +179,29 @@ class TestOpEmbedLayerNormalization(unittest.TestCase):
             },
         )
 
-        quantize_dynamic(model_f32_path, model_uint8_path)
-
+        # Test QDQ Dynamic
+        quantize_dynamic(model_f32_path, model_uint8_path, quant_format=QuantFormat.QDQ)
         # Quantization should not have any DequantizeLinear nodes:
-        qnode_counts = {"DequantizeLinear": 0, "QEmbedLayerNormalization": 1}
+        qnode_counts = {"DequantizeLinear": 0, "EmbedLayerNormalization": 1}
         check_op_type_count(self, model_uint8_path, **qnode_counts)
         data_reader.rewind()
-
         check_model_correctness(self, model_f32_path, model_uint8_path, data_reader.get_next())
+
+        data_reader = self.input_feeds_int32(
+            1,
+            {
+                "input_ids": [batch, sequence_length],
+                "segment_ids": [batch, sequence_length],
+            },
+        )
+
+        # Test QOperator Dynamic
+        quantize_dynamic(model_f32_path, model_uint8_qop_path)
+        # Quantization should not have any DequantizeLinear nodes:
+        qnode_counts = {"DequantizeLinear": 0, "QEmbedLayerNormalization": 1}
+        check_op_type_count(self, model_uint8_qop_path, **qnode_counts)
+        data_reader.rewind()
+        check_model_correctness(self, model_f32_path, model_uint8_qop_path, data_reader.get_next())
 
 
 if __name__ == "__main__":

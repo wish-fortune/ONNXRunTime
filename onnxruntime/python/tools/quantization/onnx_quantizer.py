@@ -23,14 +23,14 @@ from .quant_utils import (
     attribute_to_kwarg,
     compute_scale_zp,
     find_by_name,
-    get_qmin_qmax_for_qType,
+    get_qmin_qmax_for_qtype,
     get_qrange_for_qType,
     model_has_infer_metadata,
     quantize_data,
     save_and_reload_model,
     tensor_proto_to_array,
 )
-from .registry import CreateOpQuantizer
+from .registry import create_op_quantizer
 
 
 class ONNXQuantizer:
@@ -49,7 +49,6 @@ class ONNXQuantizer:
         op_types_to_quantize,
         extra_options=None,
     ):
-
         if not model_has_infer_metadata(model):
             model = save_and_reload_model(model)
         self.value_infos = {vi.name: vi for vi in model.graph.value_info}
@@ -123,10 +122,12 @@ class ONNXQuantizer:
         # Used when static is False
         self.fixed_qrange_uint8_name = "fixed_quantization_range_uint8"
         self.fixed_qrange_int8_name = "fixed_quantization_range_int8"
-        # For uint8 data-type, to compute zero point, we subtract rmin from 0 (represented by fixed_zero_name tensor)
+        # For symmetric we subtract rmin from qmin (represented by fixed_zero_name tensor)
         self.fixed_zero_name = "fixed_zero"
         # For int8 data-type, zero point is always zero (respresented by fixed_zero_point_name tensor)
         self.fixed_zero_zp_name = "fixed_zero_zp"
+        # Name of initializer with minimum quantization value for qint8 or quint8
+        self.fixed_qmin_name = "fixed_qmin"
 
         # Map of all original value names to quantized value names
         self.quantized_value_map = {}
@@ -260,12 +261,12 @@ class ONNXQuantizer:
             )
 
         for node in self.model.nodes():
-            # quantize subgraphes if have
+            # quantize subgraphs if have
             if self.enable_subgraph_quantization:
                 node = self.quantize_node_with_sub_graph(node)
 
             number_of_existing_new_nodes = len(self.new_nodes)
-            op_quantizer = CreateOpQuantizer(self, node)
+            op_quantizer = create_op_quantizer(self, node)
             op_quantizer.quantize()
             for i in range(number_of_existing_new_nodes, len(self.new_nodes)):
                 for output_name in self.new_nodes[i].output:
@@ -446,6 +447,18 @@ class ONNXQuantizer:
         input_scale_name = input_name + "_scale"
         input_zp_name = input_name + "_zero_point"
 
+        # Add tensors for quantize range and zero value.
+        initializer_qrange = onnx.helper.make_tensor(
+            self.fixed_qrange_uint8_name,
+            onnx_proto.TensorProto.FLOAT,
+            [],
+            [get_qrange_for_qType(qType)],
+        )
+        self.model.add_initializer(initializer_qrange)
+        # Ensures the range always includes 0
+        initializer_qvalue = onnx.helper.make_tensor(self.fixed_zero_name, onnx_proto.TensorProto.FLOAT, [], [0.0])
+        self.model.add_initializer(initializer_qvalue)
+
         reduce_min_name = input_name + "_ReduceMin"
         reduce_min_node = onnx.helper.make_node(
             "ReduceMin",
@@ -455,6 +468,12 @@ class ONNXQuantizer:
             keepdims=0,
         )
         nodes_list.append(reduce_min_node)
+
+        zero_min_name = input_name + "_Min"
+        zero_min_node = onnx.helper.make_node(
+            "Min", [reduce_min_name + ":0", self.fixed_zero_name], [zero_min_name + ":0"], zero_min_name
+        )
+        nodes_list.append(zero_min_node)
 
         reduce_max_name = input_name + "_ReduceMax"
         reduce_max_node = onnx.helper.make_node(
@@ -466,23 +485,18 @@ class ONNXQuantizer:
         )
         nodes_list.append(reduce_max_node)
 
-        # Add tensors for quantize range and zero value.
-        initializer_qrange = onnx.helper.make_tensor(
-            self.fixed_qrange_uint8_name,
-            onnx_proto.TensorProto.FLOAT,
-            [],
-            [get_qrange_for_qType(qType)],
+        zero_max_name = input_name + "_Max"
+        zero_max_node = onnx.helper.make_node(
+            "Max", [reduce_max_name + ":0", self.fixed_zero_name], [zero_max_name + ":0"], zero_max_name
         )
-        self.model.add_initializer(initializer_qrange)
-        initializer_qvalue = onnx.helper.make_tensor(self.fixed_zero_name, onnx_proto.TensorProto.FLOAT, [], [0.0])
-        self.model.add_initializer(initializer_qvalue)
+        nodes_list.append(zero_max_node)
 
         # Compute Scale
         #   Subtract rmax and rmin
         scale_sub_name = input_name + "_scale_Sub"
         scale_sub_node = onnx.helper.make_node(
             "Sub",
-            [reduce_max_node.output[0], reduce_min_node.output[0]],
+            [zero_max_node.output[0], zero_min_node.output[0]],
             [scale_sub_name + ":0"],
             scale_sub_name,
         )
@@ -498,31 +512,35 @@ class ONNXQuantizer:
         nodes_list.append(scale_div_node)
 
         # Compute zero point
-        #   Subtract zero and rmin
-        zp_sub_name = input_name + "_zero_point_Sub"
-        zp_sub_node = onnx.helper.make_node(
-            "Sub",
-            [self.fixed_zero_name, reduce_min_node.output[0]],
-            [zp_sub_name + ":0"],
-            zp_sub_name,
-        )
-        nodes_list.append(zp_sub_node)
-        #   Divide by scale
+        # Divide rmin by scale
         zp_div_name = input_name + "_zero_point_Div"
         zp_div_node = onnx.helper.make_node(
             "Div",
-            [zp_sub_node.output[0], input_scale_name],
+            [zero_min_node.output[0], input_scale_name],
             [zp_div_name + ":0"],
             zp_div_name,
         )
         nodes_list.append(zp_div_node)
-        #   Compute floor
-        zp_floor_name = input_name + "_zero_point_Floor"
-        zp_floor_node = onnx.helper.make_node("Floor", zp_div_node.output, [zp_floor_name + ":0"], zp_floor_name)
-        nodes_list.append(zp_floor_node)
-        #   Cast to integer
+        # Compute zero point
+        #   Subtract zero and rmin/scale
+        zp_sub_name = input_name + "_zero_point_Sub"
+        zp_sub_node = onnx.helper.make_node(
+            "Sub",
+            [self.fixed_qmin_name, zp_div_node.output[0]],
+            [zp_sub_name + ":0"],
+            zp_sub_name,
+        )
+        nodes_list.append(zp_sub_node)
+
+        # Compute round
+        zp_round_name = input_name + "_zero_point_Round"
+        zp_round_node = onnx.helper.make_node("Round", zp_sub_node.output, [zp_round_name + ":0"], zp_round_name)
+        nodes_list.append(zp_round_node)
+        # Cast to integer
         zp_cast_name = input_name + "_zero_point_Cast"
-        zp_cast_node = onnx.helper.make_node("Cast", zp_floor_node.output, [input_zp_name], zp_cast_name, to=qType)
+        zp_cast_node = onnx.helper.make_node(
+            "Cast", zp_round_node.output, [input_zp_name], zp_cast_name, to=qType
+        )  # TODO recast zp as int32 to avoid underflow...
         nodes_list.append(zp_cast_node)
 
         return input_scale_name, input_zp_name, [], []
@@ -672,12 +690,13 @@ class ONNXQuantizer:
         elif input_name in self.quantization_params:
             _, input_scale_name, _, _, _ = self._get_quantization_params(input_name)
         else:
-            raise ValueError("Expected {} to be in quantized value map for static quantization".format(input_name))
+            raise ValueError(f"Expected {input_name} to be in quantized value map for static quantization")
 
         inputscale_initializer = find_by_name(input_scale_name, self.model.initializer())
+
         input_scale = tensor_proto_to_array(inputscale_initializer)
 
-        # calcuate scale for bias
+        # calculate scale for bias
         bias_scale = input_scale * weight_scale * beta
 
         # quantize bias
@@ -999,7 +1018,7 @@ class ONNXQuantizer:
 
         return q_weight_name, zp_name, scale_name
 
-    def _dequantize_value(self, value_name):
+    def dequantize_value(self, value_name):
         """
         Given a value (input/output) which is quantized, add a DequantizeLinear node to dequantize
         it back to float32
@@ -1036,7 +1055,7 @@ class ONNXQuantizer:
         """
 
         for output in self.model.graph().output:
-            dequantize_node = self._dequantize_value(output.name)
+            dequantize_node = self.dequantize_value(output.name)
             if dequantize_node is not None:
                 self.new_nodes.append(dequantize_node)
 
@@ -1061,7 +1080,7 @@ class ONNXQuantizer:
         quantization_params = {}
         for tensor_name in self.tensors_range.keys():
             rmin, rmax = self.tensors_range[tensor_name]
-            qmin, qmax = get_qmin_qmax_for_qType(self.activation_qType, symmetric=self.is_activation_symmetric)
+            qmin, qmax = get_qmin_qmax_for_qtype(self.activation_qType, symmetric=self.is_activation_symmetric)
 
             quantization_params[tensor_name] = compute_scale_zp(rmin, rmax, qmin, qmax, self.is_activation_symmetric)
 

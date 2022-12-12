@@ -1,3 +1,6 @@
+import os
+import tempfile
+import unittest
 import uuid
 from pathlib import Path
 
@@ -23,18 +26,43 @@ class TestDataFeeds(CalibrationDataReader):
         self.iter_next = iter(self.data_feeds)
 
 
-def InputFeedsNegOneZeroOne(n, name2shape):
+class TempModelDir:
+    def __init__(self, path):
+        Path(path).mkdir(parents=True, exist_ok=True)
+        self.name = path
+
+    def cleanup(self):
+        """
+        leave tmp models for debugging
+        """
+        return
+
+
+class TestCaseTempDir(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        tmp_model_dir_path = os.getenv("TMP_MODEL_DIR")
+        if tmp_model_dir_path is None:
+            cls._tmp_model_dir = tempfile.TemporaryDirectory(prefix="test_op.")
+        else:
+            cls._tmp_model_dir = TempModelDir(tmp_model_dir_path)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp_model_dir.cleanup()
+
+
+def input_feeds_negone_zero_one(n, name2shape):
     """
     randomize n feed according to shape, its values are from -1, 0, and 1
     """
     input_data_list = []
-    for i in range(n):
+    for _ in range(n):
         inputs = {}
         for name, shape in name2shape.items():
             inputs.update({name: np.random.randint(-1, 2, shape).astype(np.float32)})
         input_data_list.extend([inputs])
-    dr = TestDataFeeds(input_data_list)
-    return dr
+    return TestDataFeeds(input_data_list)
 
 
 def check_op_type_order(testcase, model_to_check, ops):

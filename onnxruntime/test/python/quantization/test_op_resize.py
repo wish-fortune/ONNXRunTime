@@ -7,32 +7,24 @@
 # --------------------------------------------------------------------------
 
 import unittest
+from pathlib import Path
 
 import numpy as np
 import onnx
 from onnx import TensorProto, helper
 from op_test_utils import (
-    TestDataFeeds,
+    TestCaseTempDir,
     check_model_correctness,
     check_op_nodes,
     check_op_type_count,
     check_qtype_by_node_type,
+    input_feeds_negone_zero_one,
 )
 
-from onnxruntime.quantization import QuantFormat, QuantType, quantize_static
+from onnxruntime.quantization import QuantFormat, QuantType, quantize_dynamic, quantize_static
 
 
-class TestOpResize(unittest.TestCase):
-    def input_feeds(self, n, name2shape):
-        input_data_list = []
-        for i in range(n):
-            inputs = {}
-            for name, shape in name2shape.items():
-                inputs.update({name: np.random.randint(-1, 2, shape).astype(np.float32)})
-            input_data_list.extend([inputs])
-        dr = TestDataFeeds(input_data_list)
-        return dr
-
+class TestOpResize(TestCaseTempDir):
     def construct_model_conv_resize(
         self,
         output_model_path,
@@ -54,7 +46,7 @@ class TestOpResize(unittest.TestCase):
         # (identity_out)  (output)
         input_tensor = helper.make_tensor_value_info("input", TensorProto.FLOAT, conv_input_shape)
 
-        conv_weight_arr = np.random.randint(-1, 2, conv_weight_shape).astype(np.float32)
+        conv_weight_arr = np.random.normal(0, 0.1, conv_weight_shape).astype(np.float32)
         conv_weight_initializer = onnx.numpy_helper.from_array(conv_weight_arr, name="conv1_weight")
         conv_node = onnx.helper.make_node("Conv", ["input", "conv1_weight"], ["conv_output"], name="conv_node")
 
@@ -64,7 +56,7 @@ class TestOpResize(unittest.TestCase):
         initializers = [conv_weight_initializer]
 
         output_tensor = helper.make_tensor_value_info("output", TensorProto.FLOAT, resize_output_shape)
-        resize_inputs = ["conv_output"]  # resize_roi_name, resize_scales_name, resize_sizes_name]
+        resize_inputs = ["conv_output"]
         resize_node = helper.make_node("Resize", resize_inputs, ["output"], name="resize_node", **resize_attrs)
 
         if resize_roi is not None:
@@ -112,6 +104,7 @@ class TestOpResize(unittest.TestCase):
     def quantize_resize_test(self, activation_type, weight_type, extra_options={}):
         np.random.seed(1)
         model_fp32_path = "resize_fp32.onnx"
+        model_fp32_path = Path(self._tmp_model_dir.name).joinpath(model_fp32_path).as_posix()
 
         kwargs = {
             "coordinate_transformation_mode": "asymmetric",
@@ -134,10 +127,14 @@ class TestOpResize(unittest.TestCase):
         activation_type_str = "u8" if (activation_type == QuantType.QUInt8) else "s8"
         weight_type_str = "u8" if (weight_type == QuantType.QUInt8) else "s8"
         model_uint8_path = "resize_{}{}.onnx".format(activation_type_str, weight_type_str)
+        model_uint8_path = Path(self._tmp_model_dir.name).joinpath(model_uint8_path).as_posix()
         model_uint8_qdq_path = "resize_{}{}_qdq.onnx".format(activation_type_str, weight_type_str)
+        model_uint8_qdq_path = Path(self._tmp_model_dir.name).joinpath(model_uint8_qdq_path).as_posix()
+        model_uint8_qdq_dyn_path = "resize_{}{}_qdq_dyn.onnx".format(activation_type_str, weight_type_str)
+        model_uint8_qdq_dyn_path = Path(self._tmp_model_dir.name).joinpath(model_uint8_qdq_dyn_path).as_posix()
 
         # Verify QOperator mode
-        data_reader = self.input_feeds(1, {"input": [1, 2, 26, 42]})
+        data_reader = input_feeds_negone_zero_one(1, {"input": [1, 2, 26, 42]})
         quantize_static(
             model_fp32_path,
             model_uint8_path,
@@ -198,6 +195,34 @@ class TestOpResize(unittest.TestCase):
         check_qtype_by_node_type(self, model_uint8_qdq_path, qnode_io_qtypes)
         data_reader.rewind()
         check_model_correctness(self, model_fp32_path, model_uint8_qdq_path, data_reader.get_next())
+
+        # Verify QDQ Dynamic mode
+        data_reader.rewind()
+        quantize_dynamic(
+            model_fp32_path,
+            model_uint8_qdq_dyn_path,
+            quant_format=QuantFormat.QDQ,
+            activation_type=activation_type,
+            weight_type=weight_type,
+            extra_options=extra_options,
+            op_types_to_quantize=["Resize", "Conv"],
+        )
+        qdqnode_counts = {
+            "Conv": 1,
+            "QuantizeLinear": 1,
+            "DequantizeLinear": 2,
+            "Resize": 1,
+        }
+        check_op_type_count(self, model_uint8_qdq_dyn_path, **qdqnode_counts)
+        qnode_io_qtypes = {
+            "QuantizeLinear": [
+                ["i", 2, activation_proto_qtype],
+                ["o", 0, activation_proto_qtype],
+            ]
+        }
+        check_qtype_by_node_type(self, model_uint8_qdq_dyn_path, qnode_io_qtypes)
+        data_reader.rewind()
+        check_model_correctness(self, model_fp32_path, model_uint8_qdq_dyn_path, data_reader.get_next())
 
     def test_quantize_resize(self):
         self.quantize_resize_test(QuantType.QUInt8, QuantType.QUInt8)

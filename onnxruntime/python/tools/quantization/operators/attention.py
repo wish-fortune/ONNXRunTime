@@ -1,18 +1,15 @@
-import onnx
-from onnx import onnx_pb as onnx_proto
-
-from ..quant_utils import attribute_to_kwarg, ms_domain
-from .base_operator import QuantOperatorBase
-
 """
     Quantize Attention
 """
 
+import onnx
+
+from ..quant_utils import attribute_to_kwarg, ms_domain
+from .base_operator import QuantOperatorBase
+from .qdq_base_operator import QDQOperatorBase
+
 
 class AttentionQuant(QuantOperatorBase):
-    def __init__(self, onnx_quantizer, onnx_node):
-        super().__init__(onnx_quantizer, onnx_node)
-
     def should_quantize(self):
         return self.quantizer.should_quantize_node(self.node)
 
@@ -71,3 +68,17 @@ class AttentionQuant(QuantOperatorBase):
         nodes.append(qattention_node)
 
         self.quantizer.new_nodes += nodes
+
+
+class QDQAttention(QDQOperatorBase):
+    def quantize(self):
+        node = self.node
+        assert node.op_type == "Attention"
+
+        self.quantizer.quantize_activation_tensor(node.input[0])
+        self.quantizer.quantize_activation_tensor(node.input[1])
+        if not self.disable_qdq_for_node_output:
+            self.quantizer.quantize_activation_tensor(node.output[0])
+
+        # TODO: Test disable output
+        # TODO: How it works the is_per_channel option?

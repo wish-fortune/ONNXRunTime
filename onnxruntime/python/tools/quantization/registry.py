@@ -1,6 +1,6 @@
 from .operators.activation import QDQRemovableActivation, QLinearActivation
 from .operators.argmax import QArgMax
-from .operators.attention import AttentionQuant
+from .operators.attention import AttentionQuant, QDQAttention
 from .operators.base_operator import QuantOperatorBase
 from .operators.binary_op import QLinearBinaryOp
 from .operators.concat import QLinearConcat
@@ -10,7 +10,7 @@ from .operators.embed_layernorm import EmbedLayerNormalizationQuant
 from .operators.gather import GatherQuant, QDQGather
 from .operators.gavgpool import QGlobalAveragePool
 from .operators.gemm import QDQGemm, QLinearGemm
-from .operators.lstm import LSTMQuant
+from .operators.lstm import QDQLSTM, LSTMQuant
 from .operators.matmul import MatMulInteger, QDQMatMul, QLinearMatMul
 from .operators.maxpool import QDQMaxPool, QMaxPool
 from .operators.pad import QPad
@@ -78,12 +78,17 @@ QDQRegistry = {
     "Softmax": QDQSoftmax,
 }
 
+QDQDynamicRegistry = {
+    "Conv": QDQConv,
+    "Gemm": QDQGemm,
+    "MatMul": QDQMatMul,
+    "Attention": QDQAttention,
+    "LSTM": QDQLSTM,
+}
+QDQDynamicRegistry.update(CommonOpsRegistry)
 
-def CreateDefaultOpQuantizer(onnx_quantizer, node):
-    return QuantOperatorBase(onnx_quantizer, node)
 
-
-def CreateOpQuantizer(onnx_quantizer, node):
+def create_op_quantizer(onnx_quantizer, node):
     registry = IntegerOpsRegistry if onnx_quantizer.mode == QuantizationMode.IntegerOps else QLinearOpsRegistry
     if node.op_type in registry.keys():
         op_quantizer = registry[node.op_type](onnx_quantizer, node)
@@ -92,7 +97,13 @@ def CreateOpQuantizer(onnx_quantizer, node):
     return QuantOperatorBase(onnx_quantizer, node)
 
 
-def CreateQDQQuantizer(onnx_quantizer, node):
-    if node.op_type in QDQRegistry.keys():
+def create_qdq_quantizer(onnx_quantizer, node):
+    if onnx_quantizer.static and node.op_type in QDQRegistry:
         return QDQRegistry[node.op_type](onnx_quantizer, node)
+
+    if not onnx_quantizer.static:
+        if node.op_type in QDQDynamicRegistry:
+            return QDQDynamicRegistry[node.op_type](onnx_quantizer, node)
+
+        return None
     return QDQOperatorBase(onnx_quantizer, node)
