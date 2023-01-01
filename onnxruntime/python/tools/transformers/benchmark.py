@@ -49,6 +49,7 @@ from enum import Enum
 
 import numpy
 import onnx
+import migraphx
 import psutil
 from benchmark_helper import (
     ConfigModifier,
@@ -84,7 +85,186 @@ if "OMP_NUM_THREADS" not in os.environ:
     os.environ["OMP_NUM_THREADS"] = str(cpu_count)
 
 import torch
-from transformers import AutoConfig, AutoModel, AutoTokenizer, GPT2Model, LxmertConfig
+from transformers import AutoConfig, AutoTokenizer
+
+def get_onnx_model(
+    torch_model,
+    model_name,
+    model_class,
+    config_modifier,
+    cache_dir,
+    onnx_dir,
+    input_names,
+    use_gpu,
+    precision,
+    optimizer_info,
+    validate_onnx,
+    use_raw_attention_mask,
+    overwrite,
+    model_fusion_statistics,
+    fusion_options
+):
+    if torch_model:
+        with torch.no_grad():
+            (onnx_model_file, is_valid_onnx_model, vocab_size, max_input_size) = export_onnx_model_from_pt(
+                model_name,
+                MODELS[model_name][1],
+                MODELS[model_name][2],
+                MODELS[model_name][3],
+                model_class,
+                config_modifier,
+                cache_dir,
+                onnx_dir,
+                input_names,
+                use_gpu,
+                precision,
+                optimizer_info,
+                validate_onnx,
+                use_raw_attention_mask,
+                overwrite,
+                model_fusion_statistics,
+                fusion_options,
+            )
+            return None, onnx_model_file, is_valid_onnx_model, vocab_size, max_input_size
+    else:
+        return export_onnx_model_from_tf(
+            model_name,
+            MODELS[model_name][1],
+            MODELS[model_name][2],
+            MODELS[model_name][3],
+            model_class,
+            config_modifier,
+            cache_dir,
+            onnx_dir,
+            input_names,
+            use_gpu,
+            precision,
+            optimizer_info,
+            validate_onnx,
+            use_raw_attention_mask,
+            overwrite,
+            model_fusion_statistics,
+            fusion_options,
+        )
+
+
+def run_migraphx(
+    use_gpu,
+    model_names,
+    model_class,
+    config_modifier,
+    precision,
+    num_threads,
+    batch_sizes,
+    sequence_lengths,
+    repeat_times,
+    input_counts,
+    optimizer_info,
+    validate_onnx,
+    cache_dir,
+    onnx_dir,
+    overwrite,
+    use_raw_attention_mask,
+    model_fusion_statistics,
+    model_source,
+    args
+):
+    results = []
+
+    for model_name in model_names:
+        all_input_names = MODELS[model_name][0]
+        for num_inputs in input_counts:
+            if num_inputs > len(all_input_names):
+                break
+
+            input_names = all_input_names[:num_inputs]
+            args.model_type = MODELS[model_name][3]
+            fusion_options = FusionOptions.parse(args)
+
+            torch_model = False
+            if "pt" in model_source:
+                torch_model = True
+
+            (_, onnx_model_file, is_valid_onnx_model, vocab_size, max_sequence_length) = get_onnx_model(
+                torch_model,
+                model_name,
+                model_class,
+                config_modifier,
+                cache_dir,
+                onnx_dir,
+                input_names,
+                use_gpu,
+                precision,
+                optimizer_info,
+                validate_onnx,
+                use_raw_attention_mask,
+                overwrite,
+                model_fusion_statistics,
+                fusion_options,
+            )
+
+            if not is_valid_onnx_model:
+                continue
+
+            for batch_size in batch_sizes:
+                if batch_size <= 0:
+                    continue
+                for sequence_length in sequence_lengths:
+                    if max_sequence_length is not None and sequence_length > max_sequence_length:
+                        continue
+
+                    input_value_type = numpy.int64 if "pt" in model_source else numpy.int32
+
+                    logger.info(
+                        "Run migraphx on {} with input shape {}".format(model_name, [batch_size, sequence_length])
+                    )
+                    logger.info(f"Run migraphx on {onnx_model_file}")
+
+                    model = migraphx.parse_onnx(onnx_model_file,
+                                                default_dim_value=batch_size,
+                                                map_input_dims={"input_ids": [batch_size, sequence_length]})
+
+                    model.compile(migraphx.get_target("gpu" if use_gpu else "ref"))
+                    config = AutoConfig.from_pretrained(model_name, cache_dir=cache_dir)
+                    inputs = create_onnxruntime_input(
+                        vocab_size,
+                        batch_size,
+                        sequence_length,
+                        input_names,
+                        config,
+                        input_value_type,
+                    )
+
+                    try:
+                        runtimes = timeit.repeat(lambda: model.run(inputs), repeat=repeat_times, number=1)
+                        result = {
+                            "engine": "migraphx",
+                            "version": migraphx.__version__,
+                            "providers": "NA",
+                            "device": "cuda" if use_gpu else "cpu",
+                            "optimizer": optimizer_info,
+                            "precision": precision,
+                            "io_binding": "",
+                            "model_name": model_name,
+                            "inputs": num_inputs,
+                            "threads": num_threads,
+                            "batch_size": batch_size,
+                            "sequence_length": sequence_length,
+                            "custom_layer_num": config_modifier.get_layer_num(),
+                            "datetime": str(datetime.now()),
+                        }
+
+                        if numpy.var(runtimes, dtype=numpy.float64) * 1000.0 > 1:
+                            runtimes = runtimes[1:]
+
+                        result.update(get_latency_result(runtimes, batch_size))
+
+                        logger.info(result)
+                        results.append(result)
+                    except Exception as e:
+                        logger.error(f"FAIL! {e}")
+
+    return results
 
 
 def run_onnxruntime(
@@ -597,7 +777,7 @@ def parse_arguments():
         nargs="+",
         type=str,
         default=["onnxruntime"],
-        choices=["onnxruntime", "torch", "torchscript", "tensorflow"],
+        choices=["onnxruntime", "torch", "torchscript", "tensorflow", "migraphx"],
         help="Engines to benchmark",
     )
 
@@ -776,6 +956,7 @@ def main():
     enable_torchscript = "torchscript" in args.engines
     enable_onnxruntime = "onnxruntime" in args.engines
     enable_tensorflow = "tensorflow" in args.engines
+    enable_migraphx = "migraphx" in args.engines
 
     config_modifier = ConfigModifier(args.force_num_layers)
 
@@ -834,6 +1015,30 @@ def main():
                 args.cache_dir,
                 args.verbose,
             )
+
+        if enable_migraphx:
+            results += run_migraphx(
+                args.use_gpu,
+                args.models,
+                args.model_class,
+                config_modifier,
+                args.precision,
+                num_threads,
+                args.batch_sizes,
+                args.sequence_lengths,
+                args.test_times,
+                args.input_counts,
+                args.optimizer_info,
+                args.validate_onnx,
+                args.cache_dir,
+                args.onnx_dir,
+                args.overwrite,
+                True,
+                {},
+                args.model_source,
+                args,
+            )
+
 
         model_fusion_statistics = {}
         if enable_onnxruntime:
