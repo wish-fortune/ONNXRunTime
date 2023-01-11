@@ -382,6 +382,7 @@ endif()
 set (ONNXRUNTIME_SHARED_LIB_TEST_SRC_DIR "${TEST_SRC_DIR}/shared_lib")
 set (ONNXRUNTIME_GLOBAL_THREAD_POOLS_TEST_SRC_DIR "${TEST_SRC_DIR}/global_thread_pools")
 set (ONNXRUNTIME_API_TESTS_WITHOUT_ENV_SRC_DIR "${TEST_SRC_DIR}/api_tests_without_env")
+set (ONNXRUNTIME_NO_GLOBAL_API_TEST_SRC_DIR "${TEST_SRC_DIR}/no_global_api")
 
 set (onnxruntime_shared_lib_test_SRC
           ${ONNXRUNTIME_SHARED_LIB_TEST_SRC_DIR}/test_fixture.h
@@ -411,6 +412,12 @@ set (onnxruntime_global_thread_pools_test_SRC
 
 set (onnxruntime_api_tests_without_env_SRC
           ${ONNXRUNTIME_API_TESTS_WITHOUT_ENV_SRC_DIR}/test_apis_without_env.cc)
+
+file(GLOB onnxruntime_no_global_api_test_SRC CONFIGURE_DEPENDS
+  "${ONNXRUNTIME_NO_GLOBAL_API_TEST_SRC_DIR}/*.h"
+  "${ONNXRUNTIME_NO_GLOBAL_API_TEST_SRC_DIR}/*.cc"
+  "${ONNXRUNTIME_NO_GLOBAL_API_TEST_SRC_DIR}/*.cpp"
+)
 
 # tests from lowest level library up.
 # the order of libraries should be maintained, with higher libraries being added first in the list
@@ -1194,7 +1201,7 @@ if (NOT onnxruntime_ENABLE_TRAINING_TORCH_INTEROP)
       )
     endif()
 
-  # A separate test is needed to test the APIs that don't rely on the env being created first.
+    # A separate test is needed to test the APIs that don't rely on the env being created first.
     if (NOT CMAKE_SYSTEM_NAME MATCHES "Android|iOS")
       AddTest(DYN
               TARGET onnxruntime_api_tests_without_env
@@ -1202,6 +1209,17 @@ if (NOT onnxruntime_ENABLE_TRAINING_TORCH_INTEROP)
               LIBS ${onnxruntime_shared_lib_test_LIBS}
               DEPENDS ${all_dependencies}
       )
+    endif()
+
+    # A separate test is needed to test APIs while `Global<void>::api_ == null`
+    if (NOT CMAKE_SYSTEM_NAME MATCHES "Android|iOS")
+      AddTest(DYN
+              TARGET onnxruntime_no_global_api_test
+              SOURCES ${onnxruntime_no_global_api_test_SRC}
+              LIBS ${onnxruntime_shared_lib_test_LIBS}
+              DEPENDS ${all_dependencies}
+      )
+      target_compile_definitions(onnxruntime_no_global_api_test PRIVATE ORT_API_MANUAL_INIT _CRT_SECURE_NO_WARNINGS)
     endif()
   endif()
 
