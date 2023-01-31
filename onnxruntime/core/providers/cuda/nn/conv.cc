@@ -222,12 +222,27 @@ Status Conv<T>::UpdateState(OpKernelContext* context, bool bias_expected) const 
 
     if (w_dims_changed)
       ORT_RETURN_IF_ERROR(s_.w_desc.Set(w_dims, CudnnTensor::GetDataType<CudaT>()));
-
     // We must delay returning early until here so that the weight dims have been cached properly
     if (s_.Y->Shape().Size() == 0) {
       return Status::OK();
     }
+    // NB1: Each dimension of the bias tensor A must match the corresponding dimension of the destination tensor C or
+    // must be equal to 1. In the latter case, the same value from the bias tensor for those dimensions will
+    // be used to blend into the C tensor
 
+    // NB2: if y dimension is changed, need to also change z (if available)
+    if (context->InputCount() >= 4) {
+      const Tensor* Z = context->Input<Tensor>(3);
+      auto z_dims = Z->Shape().GetDims();
+      TensorShapeVector z_dims_extended(z_dims.begin(), z_dims.end());
+      if (z_dims_extended.size() == y_dims_cudnn.size() - 1 && y_dims_cudnn.back() == 1) {
+        z_dims_extended.push_back(y_dims_cudnn.back());
+      }
+      if (z_dims_extended.size() != y_dims_cudnn.size()) {
+        return {common::ONNXRUNTIME, 0, "z dimension does not match y dimension"};
+      }
+      ORT_RETURN_IF_ERROR(s_.z_tensor.Set(z_dims_extended, CudnnTensor::GetDataType<CudaT>()));
+    }
     ORT_RETURN_IF_ERROR(s_.x_tensor.Set(x_dims_cudnn, CudnnTensor::GetDataType<CudaT>()));
     ORT_RETURN_IF_ERROR(s_.y_tensor.Set(y_dims_cudnn, CudnnTensor::GetDataType<CudaT>()));
     ORT_RETURN_IF_ERROR(s_.conv_desc.Set(kernel_shape.size(), pads, strides, dilations,
