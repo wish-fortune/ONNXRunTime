@@ -90,18 +90,18 @@ using ProcessLogitsFunc = std::function<Status(
 
 template <typename T>
 using GreedySearchProcessLogitsFunc = std::function<Status(
-    const OrtValue& logits,                                     // logits output of subgraph
-    transformers::IGreedySearchState<T>* greedy_state,          // state
-    transformers::ISamplingState<T>* sampling_state,    // sampling buffers
-    transformers::ISequences* sequences,                        // sequences
-    AllocatorPtr& allocator,                                    // default allocator
-    onnxruntime::concurrency::ThreadPool* thread_pool,          // thread pool (for CPU only)
-    transformers::ILogitsProcessorList* logits_processors,      // logits processors
-    const transformers::IGenerationParameters* parameters,      // parameters
-    bool do_sampling,                                           // whether to do sampling
-    int step,                                                   // iteration counter
-    Stream* ort_stream,                                         // cuda stream (for CUDA only)
-    const transformers::IConsoleDumper* dumper)>;               // tensor dumper
+    const OrtValue& logits,                                 // logits output of subgraph
+    transformers::IGreedySearchState<T>* greedy_state,      // state
+    transformers::ISamplingState<T>* sampling_state,        // sampling buffers
+    transformers::ISequences* sequences,                    // sequences
+    AllocatorPtr& allocator,                                // default allocator
+    onnxruntime::concurrency::ThreadPool* thread_pool,      // thread pool (for CPU only)
+    transformers::ILogitsProcessorList* logits_processors,  // logits processors
+    const transformers::IGenerationParameters* parameters,  // parameters
+    bool do_sampling,                                       // whether to do sampling
+    int step,                                               // iteration counter
+    Stream* ort_stream,                                     // cuda stream (for CUDA only)
+    const transformers::IConsoleDumper* dumper)>;           // tensor dumper
 
 template <typename T>
 using DeviceCopyFunc = std::function<Status(
@@ -126,7 +126,10 @@ using UpdateGptFeedsFunc = std::function<Status(
     int gpt_subgraph_first_past_input_idx,
     int gpt_subgraph_first_present_output_idx,
     bool past_present_share_buffer,
-    int past_sequence_len)>;
+    int past_sequence_len,
+    bool use_preallocated_past_and_present_buffers,
+    transformers::IBeamSearchState<T>* beam_state,
+    int max_threads_per_block)>;
 
 // Create encoder inputs (for encoder-decoder model like T5).
 using CreateEncoderInputsFunc = std::function<Status(
@@ -213,7 +216,7 @@ Status ProcessLogits(const OrtValue& logits,                                 // 
 template <typename T>
 Status GreedySearchProcessLogits(const OrtValue& logits,                                 // logits output of subgraph
                                  transformers::IGreedySearchState<T>* greedy_state,      // state
-                                 transformers::ISamplingState<T>* sampling_state,    // sampling buffers
+                                 transformers::ISamplingState<T>* sampling_state,        // sampling buffers
                                  transformers::ISequences* sequences,                    // sequences
                                  AllocatorPtr& allocator,                                // default allocator
                                  onnxruntime::concurrency::ThreadPool* thread_pool,      // thread pool (for CPU only)
@@ -260,7 +263,10 @@ Status UpdateGptFeeds(
     int gpt_subgraph_first_past_input_idx,
     int gpt_subgraph_first_present_output_idx,
     bool past_present_share_buffer,
-    int past_sequence_len);
+    int past_sequence_len,
+    bool use_preallocated_past_and_present_buffers,
+    transformers::IBeamSearchState<T>* beam_state,
+    int max_threads_per_block);
 
 // ---------------------------------------------------------------
 // Functions for encoder-decoder model like T5

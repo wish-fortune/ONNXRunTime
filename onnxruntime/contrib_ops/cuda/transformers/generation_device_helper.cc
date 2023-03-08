@@ -740,40 +740,102 @@ Status PickGptPastState(const std::vector<OrtValue>& last_outputs,
                         AllocatorPtr allocator,
                         int gpt_subgraph_first_past_input_idx,
                         int gpt_subgraph_first_present_output_idx,
-                        Stream* ort_stream) {
+                        Stream* ort_stream,
+                        bool use_preallocated_past_and_present_buffers,
+                        transformers::IBeamSearchState<T>* beam_state,
+                        int max_threads_per_block) {
   int num_present_tensors = static_cast<int>(last_outputs.size()) - gpt_subgraph_first_present_output_idx;
-  for (int i = 0; i < num_present_tensors; ++i) {
-    const OrtValue& present = last_outputs[gpt_subgraph_first_present_output_idx + i];
+  cudaStream_t cuda_stream = ort_stream ? static_cast<cudaStream_t>(ort_stream->GetHandle()) : nullptr;
+  auto past_type = DataTypeImpl::GetType<T>();
 
+  if (!use_preallocated_past_and_present_buffers) {
+    for (int i = 0; i < num_present_tensors; ++i) {
+      const OrtValue& present = last_outputs[gpt_subgraph_first_present_output_idx + i];
+
+      // shape is like (2, batch_beam_size, 12, past_seq_len, 64)
+      const TensorShape& past_shape = present.Get<Tensor>().Shape();
+      auto block_size_per_beam = past_shape[2] * past_shape[3] * past_shape[4];
+      auto past_key_size = past_shape[1] * past_shape[2] * past_shape[3] * past_shape[4];
+
+      // Create a tensor with same shape.
+      OrtValue past;
+
+      // Let the allocator do the allocation
+      Tensor::InitOrtValue(past_type, past_shape, allocator, past);
+
+      gsl::span<T> past_span = gsl::make_span<T>(past.GetMutable<Tensor>()->MutableData<T>(), past_shape.Size());
+      gsl::span<const T> present_span = gsl::make_span<const T>(present.Get<Tensor>().Data<T>(), past_shape.Size());
+      for (size_t j = 0; j < beam_indices.size(); j++) {
+        int32_t beam_index = beam_indices[j];
+        gsl::span<const T> present_key = present_span.subspan(beam_index * block_size_per_beam, block_size_per_beam);
+        gsl::span<const T> present_value = present_span.subspan(past_key_size + beam_index * block_size_per_beam,
+                                                                block_size_per_beam);
+
+        gsl::span<T> past_key = past_span.subspan(j * block_size_per_beam, block_size_per_beam);
+        gsl::span<T> past_value = past_span.subspan(past_key_size + j * block_size_per_beam, block_size_per_beam);
+        CUDA_RETURN_IF_ERROR(cudaMemcpyAsync(past_key.data(), present_key.data(), present_key.size_bytes(),
+                                             cudaMemcpyDeviceToDevice, cuda_stream));
+        CUDA_RETURN_IF_ERROR(cudaMemcpyAsync(past_value.data(), present_value.data(), present_value.size_bytes(),
+                                             cudaMemcpyDeviceToDevice, cuda_stream));
+      }
+
+      next_inputs[gpt_subgraph_first_past_input_idx + i] = past;
+    }
+  } else {
+    // We need beam_state as that holds the pre-allocated past and present buffers
+    ORT_ENFORCE(beam_state);
+    int max_seq_length = beam_state->GetMaxLength();
+
+    const OrtValue& representative_present = last_outputs[gpt_subgraph_first_present_output_idx];
     // shape is like (2, batch_beam_size, 12, past_seq_len, 64)
-    const TensorShape& past_shape = present.Get<Tensor>().Shape();
-    auto block_size_per_beam = past_shape[2] * past_shape[3] * past_shape[4];
-    auto past_key_size = past_shape[1] * past_shape[2] * past_shape[3] * past_shape[4];
+    const TensorShape& representative_shape = representative_present.Get<Tensor>().Shape();
 
-    // Create a tensor with same shape.
-    // TODO(tianleiwu): allocate one buffer for all layers, and use a CUDA kernel to copy key/value cache data.
-    OrtValue past;
-    auto past_type = DataTypeImpl::GetType<T>();
-    Tensor::InitOrtValue(past_type, past_shape, allocator, past);
-    cudaStream_t cuda_stream = ort_stream ? static_cast<cudaStream_t>(ort_stream->GetHandle()) : nullptr;
+    // The following data stays the same for the past/present states from all layers
+    int batch_beam_size = static_cast<int>(representative_shape[1]);
+    int num_heads = static_cast<int>(representative_shape[2]);
+    int past_seq_length = static_cast<int>(representative_shape[3]);
+    int head_size = static_cast<int>(representative_shape[4]);
 
-    gsl::span<T> past_span = gsl::make_span<T>(past.GetMutable<Tensor>()->MutableData<T>(), past_shape.Size());
-    gsl::span<const T> present_span = gsl::make_span<const T>(present.Get<Tensor>().Data<T>(), past_shape.Size());
-    for (size_t j = 0; j < beam_indices.size(); j++) {
-      int32_t beam_index = beam_indices[j];
-      gsl::span<const T> present_key = present_span.subspan(beam_index * block_size_per_beam, block_size_per_beam);
-      gsl::span<const T> present_value = present_span.subspan(past_key_size + beam_index * block_size_per_beam,
-                                                              block_size_per_beam);
+    gsl::span<T> past_state_buffer = beam_state->GetPastStateBuffer();
 
-      gsl::span<T> past_key = past_span.subspan(j * block_size_per_beam, block_size_per_beam);
-      gsl::span<T> past_value = past_span.subspan(past_key_size + j * block_size_per_beam, block_size_per_beam);
-      CUDA_RETURN_IF_ERROR(cudaMemcpyAsync(past_key.data(), present_key.data(), present_key.size_bytes(),
-                                           cudaMemcpyDeviceToDevice, cuda_stream));
-      CUDA_RETURN_IF_ERROR(cudaMemcpyAsync(past_value.data(), present_value.data(), present_value.size_bytes(),
-                                           cudaMemcpyDeviceToDevice, cuda_stream));
+    for (int i = 0; i < num_present_tensors; ++i) {
+      gsl::span<T> current_layer_past_state_buffer = past_state_buffer.subspan(i * 2 * batch_beam_size *
+                                                                               num_heads * max_seq_length *
+                                                                               head_size);
+
+      // Create a tensor with same shape as the present state (use `representative_shape`).
+      OrtValue past;
+
+      // OrtValue doesn't own the buffer - so no need to pass in the allocator
+      Tensor::InitOrtValue(past_type, representative_shape, current_layer_past_state_buffer.data(), allocator->Info(), past);
+
+      next_inputs[gpt_subgraph_first_past_input_idx + i] = past;
     }
 
-    next_inputs[gpt_subgraph_first_past_input_idx + i] = past;
+    // Copy the selected beam indices to the device to launch the PickGptPastStateKernel kernel
+    CUDA_RETURN_IF_ERROR(cudaMemcpyAsync(beam_state->selected_next_indices.data(), beam_indices.data(),
+                                         beam_indices.size_bytes(), cudaMemcpyHostToDevice, cuda_stream));
+
+    typedef typename ToCudaType<T>::MappedType CudaT;
+    bool is_kernel_launch_successful = cuda::PickGptPastStateKernel<CudaT>(
+        reinterpret_cast<CudaT*>(past_state_buffer.data()),
+        // Use the buffer pointer of the first present state - the pre-allocated buffer is shared between
+        // the present states of all layers
+        reinterpret_cast<const CudaT*>(last_outputs[gpt_subgraph_first_present_output_idx].Get<Tensor>().Data<T>()),
+        beam_state->selected_next_indices.data(),
+        batch_beam_size,
+        past_seq_length,
+        max_seq_length,
+        num_heads,
+        head_size,
+        num_present_tensors,  // because num_present_tensors == num_layers
+        max_threads_per_block,
+        cuda_stream);
+
+    // TODO(hasesh): We should not run into a case where this is false for now.
+    // When we do plan to support a model that runs into this, we can enhance the
+    // PickGptPastStateKernel kernel.
+    ORT_ENFORCE(is_kernel_launch_successful, "Picking the past state for this GPT2 flavor is not supported yet");
   }
 
   return Status::OK();
@@ -833,7 +895,10 @@ Status UpdateGptFeeds(
     int gpt_subgraph_first_past_input_idx,
     int gpt_subgraph_first_present_output_idx,
     bool past_present_share_buffer,
-    int past_sequence_len) {
+    int past_sequence_len,
+    bool use_preallocated_past_and_present_buffers,
+    transformers::IBeamSearchState<T>* beam_state,
+    int max_threads_per_block) {
 #ifdef ENABLE_NVTX_PROFILE
   profile::NvtxNestedRangeCreator updateFeedsRange("UpdateGptFeeds", profile::Color::Yellow);
   updateFeedsRange.Begin();
@@ -885,7 +950,9 @@ Status UpdateGptFeeds(
     } else {
       ORT_RETURN_IF_ERROR(PickGptPastState<T>(last_outputs, next_inputs, beam_indices, allocator,
                                               gpt_subgraph_first_past_input_idx,
-                                              gpt_subgraph_first_present_output_idx, ort_stream));
+                                              gpt_subgraph_first_present_output_idx, ort_stream,
+                                              use_preallocated_past_and_present_buffers, beam_state,
+                                              max_threads_per_block));
     }
   }
 
@@ -1078,7 +1145,10 @@ template Status UpdateGptFeeds<float>(
     int gpt_subgraph_first_past_input_idx,
     int gpt_subgraph_first_present_output_idx,
     bool past_present_share_buffer,
-    int past_sequence_len);
+    int past_sequence_len,
+    bool use_preallocated_past_and_present_buffers,
+    transformers::IBeamSearchState<float>* beam_state,
+    int max_threads_per_block);
 
 // Float16
 template void InitBeamState<MLFloat16>(
@@ -1135,7 +1205,10 @@ template Status UpdateGptFeeds<MLFloat16>(
     int gpt_subgraph_first_past_input_idx,
     int gpt_subgraph_first_present_output_idx,
     bool past_present_share_buffer,
-    int past_sequence_len);
+    int past_sequence_len,
+    bool use_preallocated_past_and_present_buffers,
+    transformers::IBeamSearchState<MLFloat16>* beam_state,
+    int max_threads_per_block);
 
 template Status UpdateDecoderFeeds<float>(
     AllocatorPtr allocator,

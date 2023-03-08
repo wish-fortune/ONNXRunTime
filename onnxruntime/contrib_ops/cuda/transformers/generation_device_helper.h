@@ -64,7 +64,7 @@ Status ProcessLogits(const OrtValue& logits,                                 // 
 template <typename T>
 Status GreedySearchProcessLogits(const OrtValue& logits,                                 // logits output of subgraph
                                  transformers::IGreedySearchState<T>* greedy_state,      // state
-                                 transformers::ISamplingState<T>* sampling_state,// sampling buffers
+                                 transformers::ISamplingState<T>* sampling_state,        // sampling buffers
                                  transformers::ISequences* sequences,                    // sequences
                                  AllocatorPtr& allocator,                                // default allocator
                                  onnxruntime::concurrency::ThreadPool* thread_pool,      // thread pool (for CPU only)
@@ -96,7 +96,10 @@ Status UpdateGptFeeds(
     int gpt_subgraph_first_past_input_idx,
     int gpt_subgraph_first_present_output_idx,
     bool past_present_share_buffer,
-    int past_sequence_len);
+    int past_sequence_len,
+    bool use_preallocated_past_and_present_buffers,
+    transformers::IBeamSearchState<T>* beam_state,
+    int max_threads_per_block);
 
 // ---------------------------------------------------------------
 // Functions for encoder-decoder model like T5

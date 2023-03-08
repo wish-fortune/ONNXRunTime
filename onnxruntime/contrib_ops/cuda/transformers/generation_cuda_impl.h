@@ -61,7 +61,7 @@ void LaunchUpdateGptKernel(const int32_t* old_mask_data,
                            cudaStream_t stream);
 
 template <typename T>
-void GetTempStorageSize(const T *d_keys_in,
+void GetTempStorageSize(const T* d_keys_in,
                         const int* d_values_in,
                         int* d_offsets,
                         int num_items,
@@ -77,15 +77,15 @@ void LaunchSetupParamsKernel(int* d_values_in,
                              cudaStream_t stream);
 
 template <typename T>
-void LaunchSortPairs(void *d_temp_storage,
+void LaunchSortPairs(void* d_temp_storage,
                      size_t temp_storage_bytes,
-                     const T *d_keys_in,
-                     T *d_keys_out,
-                     const int *d_values_in,
-                     int *d_values_out,
+                     const T* d_keys_in,
+                     T* d_keys_out,
+                     const int* d_values_in,
+                     int* d_values_out,
                      int num_items,
                      int num_segments,
-                     int *d_offsets,
+                     int* d_offsets,
                      cudaStream_t stream,
                      bool is_descending);
 
@@ -108,6 +108,20 @@ void TorchMultinomialKernelLauncher(float* d_input,
                                     int vocab_size,
                                     int* d_presence_mask,
                                     cudaStream_t stream);
+
+template <typename T>
+bool PickGptPastStateKernel(
+    T* past_state,
+    const T* present_state,
+    const int32_t* beam_indices,
+    int batch_beam,
+    int past_seq_length,
+    int max_seq_length,
+    int num_heads,
+    int head_size,
+    int num_layers,
+    int max_threads_per_block,
+    cudaStream_t stream);
 
 }  // namespace cuda
 }  // namespace contrib
