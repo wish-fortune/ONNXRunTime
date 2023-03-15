@@ -426,11 +426,27 @@ static void CopyDataToTensor(PyArrayObject* darray, int npy_type, Tensor& tensor
 
 inline void CopyDataToTensor(PyArrayObject* darray, int npy_type, std::unique_ptr<Tensor>& p_tensor,
                              MemCpyFunc mem_cpy_to_device = CpuToCpuMemCpy) {
-  CopyDataToTensor(darray, npy_type, *p_tensor, mem_cpy_to_device);
+  // If the provided py_array is already contiguous, its ref count will be incremented and we will decrement
+  // the ref count when this function's scope ends
+  PyArrayObject* contiguous_array = PyArray_GETCONTIGUOUS(darray);
+  ORT_ENFORCE(contiguous_array != nullptr, "The array that needs to be copied over to the tensor must be contiguous");
+
+  // Clean-up the contiguous array after the end of the current scope
+  UniqueDecRefPtr<PyArrayObject> contiguous_array_guard(contiguous_array, DecRefFn<PyArrayObject>());
+
+  CopyDataToTensor(contiguous_array, npy_type, *p_tensor, mem_cpy_to_device);
 }
 
 void CopyDataToTensor(const py::array& py_array, int npy_type, Tensor& tensor, MemCpyFunc mem_cpy_to_device) {
-  CopyDataToTensor(reinterpret_cast<PyArrayObject*>(py_array.ptr()), npy_type, tensor, mem_cpy_to_device);
+  // If the provided py_array is already contiguous, its ref count will be incremented and we will decrement
+  // the ref count when this function's scope ends
+  PyArrayObject* contiguous_array = PyArray_GETCONTIGUOUS(reinterpret_cast<PyArrayObject*>(py_array.ptr()));
+  ORT_ENFORCE(contiguous_array != nullptr, "The array that needs to be copied over to the tensor must be contiguous");
+
+  // Clean-up the contiguous array after the end of the current scope
+  UniqueDecRefPtr<PyArrayObject> contiguous_array_guard(contiguous_array, DecRefFn<PyArrayObject>());
+
+  CopyDataToTensor(contiguous_array, npy_type, tensor, mem_cpy_to_device);
 }
 
 // Setting `use_numpy_data_memory` to `true` will ensure that the underlying numpy array buffer is directly used
