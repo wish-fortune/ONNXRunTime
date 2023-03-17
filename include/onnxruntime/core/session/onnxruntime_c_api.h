@@ -332,6 +332,8 @@ typedef struct OrtKernelContext OrtKernelContext;
 struct OrtCustomOp;
 typedef struct OrtCustomOp OrtCustomOp;
 
+typedef void (*CustomComputeFn)(OrtKernelContext*);
+
 typedef enum OrtAllocatorType {
   OrtInvalidAllocator = -1,
   OrtDeviceAllocator = 0,
@@ -3965,6 +3967,24 @@ struct OrtApi {
 #ifdef __cplusplus
   OrtApi(const OrtApi&) = delete;  // Prevent users from accidentally copying the API structure, it should always be passed as a pointer
 #endif
+
+  ORT_API2_STATUS(LiteCustomOpResgiter,
+                  _In_ const char* domain_name,
+                  _In_ const char* op_name,
+                  _In_ const char* execution_provider,
+                  _In_ const CustomComputeFn custom_compute_fn,
+                  _In_ size_t num_outputs,
+                  _In_... /* output types from ONNXTensorElementDataType */);
+
+  ORT_API2_STATUS(RegisterCustomFunc,
+                  _In_ const char* domain_name,
+                  _In_ const char* op_name,
+                  _In_ const char* execution_provider,
+                  _In_ const CustomComputeFn custom_compute_fn);
+
+  ORT_API2_STATUS(AddCustomOp,
+                  _In_ const char* domain_name,
+                  _In_ OrtCustomOp* custom_op);
 };
 
 /*
@@ -3988,6 +4008,7 @@ typedef enum OrtCustomOpInputOutputCharacteristic {
   INPUT_OUTPUT_VARIADIC,
 } OrtCustomOpInputOutputCharacteristic;
 
+using CustomComputeFnT = void(*)(OrtKernelContext*, void*);
 /*
  * The OrtCustomOp structure defines a custom op's schema and its kernel callbacks. The callbacks are filled in by
  * the implementor of the custom op.
@@ -4043,6 +4064,9 @@ struct OrtCustomOp {
   // and false (zero) otherwise.
   // Applicable only for custom ops that have a variadic output.
   int(ORT_API_CALL* GetVariadicOutputHomogeneity)(_In_ const struct OrtCustomOp* op);
+
+  CustomComputeFnT custom_compute_fn_ = {};
+  void* raw_fn_ = {};
 };
 
 /*

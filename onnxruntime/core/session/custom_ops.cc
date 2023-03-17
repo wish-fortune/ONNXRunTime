@@ -286,31 +286,262 @@ ORT_API_STATUS_IMPL(OrtApis::KernelInfo_GetOutputTypeInfo, _In_ const OrtKernelI
 namespace onnxruntime {
 
 struct CustomOpKernel : OpKernel {
-  CustomOpKernel(const OpKernelInfo& info, const OrtCustomOp& op) : OpKernel(info), op_(op) {
-    if (op_.version > ORT_API_VERSION) {
-      ORT_THROW("Unsupported version '" + std::to_string(op_.version) + "' in custom op '" + op.GetName(&op));
+  using CustomComputeFn = void (*)(OrtKernelContext*, void*);
+
+  CustomOpKernel(const OpKernelInfo& info, const OrtCustomOp& op) : OpKernel(info) {
+    if (op.custom_compute_fn_ && op.raw_fn_) {
+      custom_compute_fn_ = op.custom_compute_fn_;
+      raw_fn_ = op.raw_fn_;
+      return;
+    }
+    op_ = &op;
+    if (op_->version > ORT_API_VERSION) {
+      ORT_THROW("Unsupported version '" + std::to_string(op_->version) + "' in custom op '" + op_->GetName(op_));
     }
 
-    op_kernel_ = op_.CreateKernel(&op_, OrtGetApiBase()->GetApi(op_.version),
-                                  reinterpret_cast<const OrtKernelInfo*>(&info));
+    op_kernel_ = op_->CreateKernel(op_, OrtGetApiBase()->GetApi(op_->version),
+                                   reinterpret_cast<const OrtKernelInfo*>(&info));
   }
 
-  ~CustomOpKernel() override { op_.KernelDestroy(op_kernel_); }
+  // CustomOpKernel(const OpKernelInfo& info, CustomComputeFn custom_compute_fn, void* raw_fn) : OpKernel(info),
+  //                                                                                                 custom_compute_fn_(custom_compute_fn),
+  //                                                                                                 raw_fn_(raw_fn) {
+  //   ORT_ENFORCE(custom_compute_fn_ && raw_fn_);
+  //   if (op_->version > ORT_API_VERSION) {
+  //     ORT_THROW("Unsupported version '" + std::to_string(op_->version) + "' in custom op '" + op_->GetName(op_));
+  //   }
+  // }
+
+  ~CustomOpKernel() override {
+    if (op_) {
+      op_->KernelDestroy(op_kernel_);
+    }
+  }
 
   Status Compute(OpKernelContext* ctx) const override {
-    op_.KernelCompute(op_kernel_, reinterpret_cast<OrtKernelContext*>(ctx));
+    auto ort_ctx = reinterpret_cast<OrtKernelContext*>(ctx);
+    if (op_) {
+      op_->KernelCompute(op_kernel_, ort_ctx);
+    } else if (custom_compute_fn_ && raw_fn_) {
+      custom_compute_fn_(ort_ctx, raw_fn_);
+    } else {
+      return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT, "custom kernel compute failed.");
+    }
     return Status::OK();
   }
 
  private:
   ORT_DISALLOW_COPY_ASSIGNMENT_AND_MOVE(CustomOpKernel);
 
-  const OrtCustomOp& op_;
-  void* op_kernel_;
+  const OrtCustomOp* op_{};
+  void* op_kernel_{};
+
+  //////////////////////////////////
+
+  CustomComputeFn custom_compute_fn_{};
+  void* raw_fn_{};
 };
 
 common::Status CreateCustomRegistry(gsl::span<OrtCustomOpDomain* const> op_domains,
-                                    std::shared_ptr<CustomRegistry>& output) {
+                                     std::shared_ptr<CustomRegistry>& output) {
+  output = std::make_shared<CustomRegistry>();
+
+  using OnnxTypeVec = std::vector<ONNXTensorElementDataType>;
+
+  for (const auto& domain : op_domains) {
+    std::unordered_map<std::string, ONNX_NAMESPACE::OpSchema> schema_map;
+    std::unordered_map<std::string, std::vector<OnnxTypeVec>> type_map;
+
+#if !defined(ORT_MINIMAL_BUILD)
+    // Domain is not empty - add it to the DomainToVersion ONNX map
+    // If domain is empty, it is assumed to be part of the ONNX domain
+    if (!domain->domain_.empty()) {
+      // Add it to the DomainToVersion ONNX map if it doesn't already exist
+      // For example, two sessions using the same session_options should not add the same custom op domain to the version map twice
+      auto& domain_to_version_range_instance = ONNX_NAMESPACE::OpSchemaRegistry::DomainToVersionRange::Instance();
+      const auto& domain_to_version_map = domain_to_version_range_instance.Map();
+
+      if (domain_to_version_map.find(domain->domain_) == domain_to_version_map.end()) {
+        domain_to_version_range_instance.AddDomainToVersion(domain->domain_, 1, 1000);
+      }
+    }
+
+    constexpr uint32_t min_ort_version_with_optional_io_support = 8;
+    constexpr uint32_t min_ort_version_with_variadic_io_support = 14;
+
+    for (const auto* op : domain->custom_ops_) {
+      std::vector<std::string> type_constraint_ids;
+      const size_t input_count = op->GetInputTypeCount(op);
+      const size_t output_count = op->GetOutputTypeCount(op);
+
+      auto schema_map_iter = schema_map.find(op->GetName(op));
+      if (schema_map_iter == schema_map.end()) {
+        type_map.emplace(op->GetName(op), std::vector<OnnxTypeVec>{});
+        ONNX_NAMESPACE::OpSchema schema(op->GetName(op), "custom op registered at runtime", 0);
+
+        size_t type_id_counter = 0;
+        for (size_t i = 0; i < input_count; i++) {
+          onnx::OpSchema::FormalParameterOption option = onnx::OpSchema::FormalParameterOption::Single;
+          bool is_homogeneous = true;
+          int min_arity = 1;
+
+          // The OrtCustomOp interface did not support the methods to query input/output characteristics before
+          // ORT API version 8. So, query the relevant methods ONLY from API version 8 onwards.
+          if (op->version >= min_ort_version_with_optional_io_support) {
+            const auto characteristic = op->GetInputCharacteristic(op, i);
+
+            // Support for optional and variadic inputs/output was added in versions 8 and 14, respectively.
+            if (characteristic == OrtCustomOpInputOutputCharacteristic::INPUT_OUTPUT_OPTIONAL) {
+              option = onnx::OpSchema::FormalParameterOption::Optional;
+            } else if ((op->version >= min_ort_version_with_variadic_io_support) &&
+                       (characteristic == OrtCustomOpInputOutputCharacteristic::INPUT_OUTPUT_VARIADIC)) {
+              ORT_ENFORCE(i == input_count - 1, "Only the last input to a custom op may be marked variadic.");
+              option = onnx::OpSchema::FormalParameterOption::Variadic;
+              min_arity = op->GetVariadicInputMinArity(op);
+              is_homogeneous = static_cast<bool>(op->GetVariadicInputHomogeneity(op));
+            }
+          }
+
+          schema.Input(i, "Input" + std::to_string(i), "", "T" + std::to_string(type_id_counter), option, is_homogeneous, min_arity);
+          schema.TypeConstraint("T" + std::to_string(type_id_counter), DataTypeImpl::ToString(DataTypeImpl::AllTensorTypes()), "all types");
+          type_constraint_ids.push_back("T" + std::to_string(type_id_counter++));
+        }
+
+        for (size_t i = 0; i < output_count; i++) {
+          onnx::OpSchema::FormalParameterOption option = onnx::OpSchema::FormalParameterOption::Single;
+          bool is_homogeneous = true;
+          int min_arity = 1;
+
+          // The OrtCustomOp interface did not support the methods to query input/output characteristics before
+          // ORT API version 8. So, query the relevant methods ONLY from API version 8 onwards.
+          if (op->version >= min_ort_version_with_optional_io_support) {
+            const auto characteristic = op->GetOutputCharacteristic(op, i);
+
+            // Support for optional and variadic inputs/output was added in versions 8 and 14, respectively.
+            if (characteristic == OrtCustomOpInputOutputCharacteristic::INPUT_OUTPUT_OPTIONAL) {
+              option = onnx::OpSchema::FormalParameterOption::Optional;
+            } else if ((op->version >= min_ort_version_with_variadic_io_support) &&
+                       (characteristic == OrtCustomOpInputOutputCharacteristic::INPUT_OUTPUT_VARIADIC)) {
+              ORT_ENFORCE(i == output_count - 1, "Only the last output to a custom op may be marked variadic.");
+              option = onnx::OpSchema::FormalParameterOption::Variadic;
+              min_arity = op->GetVariadicOutputMinArity(op);
+              is_homogeneous = static_cast<bool>(op->GetVariadicOutputHomogeneity(op));
+            }
+          }
+
+          schema.Output(i, "Output" + std::to_string(i), "", "T" + std::to_string(type_id_counter), option, is_homogeneous, min_arity);
+          schema.TypeConstraint("T" + std::to_string(type_id_counter), DataTypeImpl::ToString(DataTypeImpl::AllTensorTypes()), "all types");
+          type_constraint_ids.push_back("T" + std::to_string(type_id_counter++));
+        }
+
+        schema.SetDomain(domain->domain_);
+        schema.SinceVersion(1);
+        schema.AllowUncheckedAttributes();
+        schema_map.emplace(schema.Name(), schema);
+      } else {
+        // todo - perform some consistency check here
+      }
+
+      type_map[op->GetName(op)].push_back({});
+      KernelDefBuilder def_builder;
+      def_builder.SetName(op->GetName(op))
+          .SetDomain(domain->domain_)
+          .SinceVersion(1);
+
+      // GetInputMemoryType was introduced in ver 13. This check allows custom ops compiled using older versions
+      // to work with newer versions (> 12) of the ORT binary.
+      if (op->version > 12) {
+        //auto input_count = op->GetInputTypeCount(op);
+        for (size_t i = 0; i < input_count; i++) {
+          def_builder.InputMemoryType(op->GetInputMemoryType(op, i), i);
+        }
+      }
+
+      size_t type_constraint_indice = 0;
+      for (size_t i = 0; i < input_count; i++) {
+        type_map[op->GetName(op)].back().push_back(op->GetInputType(op, i));
+        def_builder.TypeConstraint(type_constraint_ids[type_constraint_indice++],
+                                   DataTypeImpl::TensorTypeFromONNXEnum((int)op->GetInputType(op, i))->AsTensorType());
+      }
+      for (size_t i = 0; i < output_count; i++) {
+        type_map[op->GetName(op)].back().push_back(op->GetOutputType(op, i));
+        def_builder.TypeConstraint(type_constraint_ids[type_constraint_indice++],
+                                   DataTypeImpl::TensorTypeFromONNXEnum((int)op->GetOutputType(op, i))->AsTensorType());
+      }
+
+      if (const char* provider_type = op->GetExecutionProviderType(op)) {
+        def_builder.Provider(provider_type);
+      } else {
+        def_builder.Provider(onnxruntime::kCpuExecutionProvider);
+      }
+
+      KernelCreateFn kernel_create_fn = [op](FuncManager&, const OpKernelInfo& info, std::unique_ptr<OpKernel>& out) -> Status {
+        out = std::make_unique<CustomOpKernel>(info, *op);
+        return Status::OK();
+      };
+
+      KernelCreateInfo create_info(def_builder.Build(), kernel_create_fn);
+      ORT_RETURN_IF_ERROR(output->RegisterCustomKernel(create_info));
+    }
+
+    std::vector<ONNX_NAMESPACE::OpSchema> schemas;
+    for (auto schema_iter : schema_map) {
+      schemas.push_back(schema_iter.second);
+      auto type_iter = type_map.find(schema_iter.first);
+      ORT_ENFORCE(type_iter != type_map.end());
+      std::vector<OnnxTypeVec> type_vecs = type_iter->second;
+      ONNX_NAMESPACE::InferenceFunction infer_fn = [type_vecs](ONNX_NAMESPACE::InferenceContext& infer_ctx) {
+        auto num_inputs = infer_ctx.getNumInputs();
+        std::vector<ONNXTensorElementDataType> input_types;
+        for (size_t i = 0; i < num_inputs; ++i) {
+          input_types.push_back((ONNXTensorElementDataType)infer_ctx.getInputType(i)->tensor_type().elem_type());
+        }
+        for (const auto& type_vec : type_vecs) {
+          bool match = true;
+          for (size_t i = 0; i < num_inputs; i++) {
+            if (type_vec[i] != input_types[i]) {
+              match = false;
+              break;
+            }
+          }
+          if (match) {
+            for (size_t i = num_inputs; i < type_vec.size(); i++) {
+              auto* output_type = infer_ctx.getOutputType(i - num_inputs);
+              output_type->mutable_tensor_type()->set_elem_type(type_vec[i]);
+            }
+            break;
+          }
+        }
+      };
+      schemas.back().TypeAndShapeInferenceFunction(infer_fn);
+    }
+
+    ORT_RETURN_IF_ERROR(output->RegisterOpSet(schemas,
+                                              domain->domain_,
+                                              1 /* baseline opset version */,
+                                              1000 /* opset version */));
+
+#else
+    // For a minimal build, we may not need any of the ONNX schema stuff but we still need to track
+    // the type template parameters to be used during the kernel def building step below
+    for (const auto* op : domain->custom_ops_) {
+      size_t type_id_counter = 0;
+      auto input_count = op->GetInputTypeCount(op);
+      for (size_t i = 0; i < input_count; i++) {
+        auto type = op->GetInputType(op, i);
+        if (ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED == type) {  // Dynamic typed input
+          type_constraint_ids[op].push_back("T" + std::to_string(type_id_counter++));
+        }
+      }
+    }
+#endif
+  }
+ 
+  return Status::OK();
+}
+
+common::Status CreateCustomRegistryB(gsl::span<OrtCustomOpDomain* const> op_domains,
+                                     std::shared_ptr<CustomRegistry>& output) {
   output = std::make_shared<CustomRegistry>();
 
   for (const auto& domain : op_domains) {

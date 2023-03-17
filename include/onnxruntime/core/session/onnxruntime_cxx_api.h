@@ -33,6 +33,7 @@
 #include <unordered_map>
 #include <utility>
 #include <type_traits>
+#include <tuple>
 
 #ifdef ORT_NO_EXCEPTIONS
 #include <iostream>
@@ -601,6 +602,23 @@ struct SessionOptionsImpl : ConstSessionOptionsImpl<T> {
   SessionOptionsImpl& RegisterCustomOpsLibrary(const ORTCHAR_T* library_name, const CustomOpConfigs& custom_op_configs = {});
 
   SessionOptionsImpl& RegisterCustomOpsUsingFunction(const char* function_name);  ///< Wraps OrtApi::RegisterCustomOpsUsingFunction
+
+  SessionOptionsImpl& RegisterCustomFunc(const char* domain_name, const char* op_name, const char* execution_provider, const CustomComputeFn custom_compute_fn);
+
+  template <typename... Args>
+  SessionOptionsImpl& RegisterCustomFuncT(const char* domain_name, const char* op_name, const char* execution_provider, void (*custom_compute_fn)(Args... args));
+
+  /////////////////////////////////////////////////////////////////////////////////
+
+  template <typename... Args>
+  SessionOptionsImpl& RegisterCustomFuncT2(const char* domain_name, const char* op_name, const char* execution_provider, void (*custom_compute_fn)(Args... args));
+
+  ~SessionOptionsImpl();
+
+ private:
+  std::unordered_map<std::string, OrtCustomOpDomain*> custom_domains_map_;
+  using OrtCustomOpPtr = std::unique_ptr<OrtCustomOp>;
+  std::vector<OrtCustomOpPtr> custom_ops_;
 };
 }  // namespace detail
 
@@ -1878,6 +1896,59 @@ struct CustomOpBase : OrtCustomOp {
   // Helper function that returns a map of session config entries specified by CustomOpBase::GetSessionConfigKeys.
   void GetSessionConfigs(std::unordered_map<std::string, std::string>& out, ConstSessionOptions options) const;
 };
+
+namespace Custom {
+
+class Tensor {
+ public:
+  Tensor(OrtKernelContext* ctx) : ctx_(ctx) {}
+
+ protected:
+  struct KernelContext ctx_;
+};
+
+template<typename T>
+class InputTensor : public Tensor {
+ public:
+  using TT = typename std::remove_reference<T>::type;
+
+  InputTensor(OrtKernelContext* ctx, size_t indice) : Tensor(ctx) {
+    const_value_ = ctx_.GetInput(indice);
+  };
+  std::vector<int64_t> Shape() const {
+    // assert(const_value_);
+    auto type_shape_info = const_value_.GetTensorTypeAndShapeInfo();
+    return type_shape_info.GetShape();
+  }
+  const TT* Data() const {
+    // assert(const_value_);
+    return reinterpret_cast<const TT*>(const_value_.GetTensorRawData());
+  }
+ private:
+  ConstValue const_value_;
+};
+
+template <typename T>
+class OutputTensor : public Tensor {
+ public:
+  OutputTensor(OrtKernelContext* ctx, size_t indice) : Tensor(ctx), indice_(indice) {}
+  void* Allocate(const std::vector<int64_t>& shape) {
+    if (!data_) {
+      data_ = ctx_.GetOutput(indice_, shape).GetTensorMutableRawData();
+    }
+    return data_;
+  }
+
+ private:
+  void* data_{};
+  const size_t indice_;
+};
+
+template <typename... Args>
+OrtCustomOp* CreateCustomOp(const char* op_name,
+                            const char* execution_provider,
+                            void (*custom_compute_fn)(Args...));
+}  // namespace custom
 
 }  // namespace Ort
 
