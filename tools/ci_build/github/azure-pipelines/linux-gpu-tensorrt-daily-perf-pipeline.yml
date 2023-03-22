@@ -39,6 +39,16 @@ parameters:
   type: object
   default: []
 
+- name: OrtBranchOverride
+  displayName: Testing branch
+  type: string
+  default: 'selected'
+
+- name: OrtCommitIdOverride
+  displayName: Testing commit
+  type: string
+  default: 'latest'
+
 jobs:
 - job: 'Onnxruntime_Linux_GPU_TensorRT_Perf'
   workspace:
@@ -47,11 +57,18 @@ jobs:
   pool: 'Onnxruntime-Linux-GPU-TensorRT-Perf'
   
   variables:
+    - name: scriptsBranchName
+      value: $[ replace(variables['Build.SourceBranch'], 'refs/heads/', '') ]
+
     - name: branchName
-      ${{ if not(eq(variables['ortBranchOverride'], '')) }}:
-        value: $(ortBranchOverride)
+      ${{ if eq(parameters.OrtBranchOverride, 'selected') }}:
+        value: $(scriptsBranchName)
       ${{ else }}:
-        value: $[ replace(variables['Build.SourceBranch'], 'refs/heads/', '') ]
+        value: ${{ parameters.OrtBranchOverride }}
+
+    - name: buildCommitIdCLIArg
+      ${{ if not(eq(parameters.OrtCommitIdOverride, 'latest')) }}:
+        value: -c ${{ parameters.OrtCommitIdOverride }}
 
     - name: trtVersion
       ${{ if eq(parameters.TrtVersion, 'BIN') }}:
@@ -68,7 +85,7 @@ jobs:
         value: --cuda_ep_options ${{ join(',',parameters.CUDAEPOptions) }}
 
     - name: optional_arguments
-      value: -a "-a -z -g $(optimizeGraph) -b $(bindInputs) $(trtEPOptionsArg) $(cudaEPOptionsArg)"
+      value: -a "-a -g $(optimizeGraph) -b $(bindInputs) $(trtEPOptionsArg) $(cudaEPOptionsArg) --ort_source_dir=$(dockerCodeDir)/onnxruntime"
 
     - name: image
       value: ort-image-$(Build.BuildId)
@@ -81,11 +98,11 @@ jobs:
       - script: 'cp $(trtBinsDir)/TensorRT-$(trtVersion).Linux.x86_64-gnu.cuda-$(tarCudaVersion).cudnn$(tarCudnnVersion).tar.gz $(Build.SourcesDirectory)/onnxruntime/python/tools/tensorrt/perf/build/'
         displayName: 'Copy TensorRT .tar.gz package into Docker build directory'
 
-      - script: 'python3 $(Build.SourcesDirectory)/onnxruntime/python/tools/tensorrt/perf/build/build_image.py -r $(Build.SourcesDirectory) -i $(image) -b $(branchName) -t $(trtVersion) -a 75 --install_bin --tar_cuda_version=$(tarCudaVersion) --tar_cudnn_version=$(tarCudnnVersion) --trt_bins_dir=.'
+      - script: 'python3 $(Build.SourcesDirectory)/onnxruntime/python/tools/tensorrt/perf/build/build_image.py -r $(Build.SourcesDirectory) -i $(image) -b $(branchName) $(buildCommitIdCLIArg) -t $(trtVersion) -a 75 --install_bin --tar_cuda_version=$(tarCudaVersion) --tar_cudnn_version=$(tarCudnnVersion) --trt_bins_dir=. --docker_repo_clone_dir=$(dockerCodeDir)'
         displayName: 'Install TensorRT from binaries and build latest ORT Image'
         workingDirectory: '$(Build.SourcesDirectory)/onnxruntime/python/tools/tensorrt/perf/build'
     - ${{ else }}:
-      - script: 'python3 $(Build.SourcesDirectory)/onnxruntime/python/tools/tensorrt/perf/build/build_image.py -r $(Build.SourcesDirectory) -i $(image) -b $(branchName) -t $(trtVersion) -a 75'
+      - script: 'python3 $(Build.SourcesDirectory)/onnxruntime/python/tools/tensorrt/perf/build/build_image.py -r $(Build.SourcesDirectory) -i $(image) -b $(branchName) $(buildCommitIdCLIArg) -t $(trtVersion) -a 75 --docker_repo_clone_dir=$(dockerCodeDir)'
         displayName: 'Build latest ORT Image'
         workingDirectory: '$(Build.SourcesDirectory)/onnxruntime/python/tools/tensorrt/perf/build'
 
@@ -134,9 +151,7 @@ jobs:
           scriptLocation: inlineScript
           scriptType: bash
           inlineScript: |
-            short_hash=$(git rev-parse --short HEAD) &&
-            commit_date=$(git log -1 --date=iso-strict --pretty=format:%cd) &&
-            python3 $(Build.SourcesDirectory)/onnxruntime/python/tools/tensorrt/perf/post.py -r $(Build.SourcesDirectory)/Artifact/result -c $short_hash -d $commit_date -u "$(reportUrl)?buildId=$(Build.BuildId)" -t $(trtVersion) -b $(branchName) --kusto_conn $(kustoConn) --database $(database)
+            python3 $(Build.SourcesDirectory)/onnxruntime/python/tools/tensorrt/perf/post.py -r $(Build.SourcesDirectory)/Artifact/result -u "$(reportUrl)?buildId=$(Build.BuildId)" --kusto_conn $(kustoConn) --database $(database)
     
     - template: templates/component-governance-component-detection-steps.yml
       parameters :
