@@ -21,10 +21,18 @@ void GraphViewerToProto(const GraphViewer& graph_view,
   }
 
   for (const auto* value_info : graph_view.GetValueInfo()) {
-    *(graph_proto.mutable_value_info()->Add()) = value_info->ToProto();
+    auto input_it = std::find_if(graph_view.GetInputsIncludingInitializers().begin(),
+                                 graph_view.GetInputsIncludingInitializers().end(),
+                                 [value_info](const NodeArg* arg) { return arg && arg->Name() == value_info->Name(); });
+    auto output_it = std::find_if(graph_view.GetOutputs().begin(),
+                                  graph_view.GetOutputs().end(),
+                                  [value_info](const NodeArg* arg) { return arg && arg->Name() == value_info->Name(); });
+    if (input_it == graph_view.GetInputsIncludingInitializers().end() &&
+        output_it == graph_view.GetOutputs().end())
+      *(graph_proto.mutable_value_info()->Add()) = value_info->ToProto();
   }
 
-  if (include_outer_scope_args){
+  if (include_outer_scope_args) {
     // add the NodeArg info for outer scope NodeArgs so we capture the type information
     for (const auto& name : graph_view.GetOuterScopeNodeArgNames()) {
       auto* node_arg = graph_view.GetNodeArg(name);
@@ -60,7 +68,6 @@ void GraphViewerToProto(const GraphViewer& graph_view,
       current_scope_initializer_set.insert(it);
     }
 
-
     // handle outer scope value which is a constant initializer
     if (include_outer_scope_args) {
       for (auto& node_idx : graph_view.GetNodesInTopologicalOrder()) {
@@ -80,4 +87,4 @@ void GraphViewerToProto(const GraphViewer& graph_view,
   }
 }
 
-}
+}  // namespace onnxruntime
