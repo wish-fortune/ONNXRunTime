@@ -391,7 +391,7 @@ TEST(QDQTransformerTests, GlobalAveragePool_U8S8) {
   QDQTransformerAveragePoolTests<uint8_t, int8_t>();
 }
 
-template <typename Input1Type, typename Input2Type, typename OutputType>
+template <typename Input1Type, typename Input2Type, typename OutputType, bool IsInput2Constant>
 void QDQTransformerBinaryOpTests(const std::string& op_type) {
   auto test_case = [&](const std::vector<int64_t>& input_shape) {
     auto check_graph = [&](InferenceSessionWrapper& session) {
@@ -402,7 +402,14 @@ void QDQTransformerBinaryOpTests(const std::string& op_type) {
         EXPECT_EQ(op_to_count[op_type], 0);
         EXPECT_EQ(op_to_count["QuantizeLinear"], 2);
         EXPECT_EQ(op_to_count["DequantizeLinear"], 1);
-      } else {
+      }
+      else if (std::is_same<Input1Type, OutputType>::value && IsInput2Constant) {
+        EXPECT_EQ(op_to_count["com.microsoft.QLinear" + op_type], 1);
+        EXPECT_EQ(op_to_count[op_type], 0);
+        EXPECT_EQ(op_to_count["QuantizeLinear"], 1);
+        EXPECT_EQ(op_to_count["DequantizeLinear"], 1);
+      }
+      else {
         EXPECT_EQ(op_to_count["com.microsoft.QLinear" + op_type], 0);
         EXPECT_EQ(op_to_count[op_type], 1);
         EXPECT_EQ(op_to_count["QuantizeLinear"], 3);
@@ -410,7 +417,7 @@ void QDQTransformerBinaryOpTests(const std::string& op_type) {
       }
     };
 
-    TransformerTester(BuildBinaryOpTestCase<Input1Type, Input2Type, OutputType>(input_shape, op_type),
+    TransformerTester(BuildBinaryOpTestCase<Input1Type, Input2Type, OutputType, IsInput2Constant>(input_shape, op_type),
                       check_graph,
                       TransformerLevel::Level1,
                       TransformerLevel::Level2,
@@ -434,31 +441,32 @@ void QDQTransformerBinaryOpTests(const std::string& op_type) {
 }
 
 TEST(QDQTransformerTests, Add) {
-  QDQTransformerBinaryOpTests<uint8_t, uint8_t, uint8_t>("Add");
-  QDQTransformerBinaryOpTests<int8_t, int8_t, int8_t>("Add");
+  QDQTransformerBinaryOpTests<uint8_t, uint8_t, uint8_t, false>("Add");
+  QDQTransformerBinaryOpTests<int8_t, int8_t, int8_t, false>("Add");
 }
 
 TEST(QDQTransformerTests, Add_Have_Different_Types) {
-  QDQTransformerBinaryOpTests<uint8_t, int8_t, int8_t>("Add");
-  QDQTransformerBinaryOpTests<uint8_t, uint8_t, int8_t>("Add");
-  QDQTransformerBinaryOpTests<uint8_t, int8_t, uint8_t>("Add");
-  QDQTransformerBinaryOpTests<int8_t, int8_t, int8_t>("Add");
-  QDQTransformerBinaryOpTests<int8_t, uint8_t, int8_t>("Add");
-  QDQTransformerBinaryOpTests<int8_t, int8_t, uint8_t>("Add");
+  QDQTransformerBinaryOpTests<uint8_t, int8_t, int8_t, false>("Add");
+  QDQTransformerBinaryOpTests<uint8_t, uint8_t, int8_t, false>("Add");
+  QDQTransformerBinaryOpTests<uint8_t, int8_t, uint8_t, false>("Add");
+  QDQTransformerBinaryOpTests<int8_t, int8_t, int8_t, false>("Add");
+  QDQTransformerBinaryOpTests<int8_t, uint8_t, int8_t, false>("Add");
+  QDQTransformerBinaryOpTests<int8_t, int8_t, uint8_t, false>("Add");
+  QDQTransformerBinaryOpTests<uint8_t, int8_t, uint8_t, true>("Add");
 }
 
 TEST(QDQTransformerTests, Mul) {
-  QDQTransformerBinaryOpTests<uint8_t, uint8_t, uint8_t>("Mul");
-  QDQTransformerBinaryOpTests<int8_t, int8_t, int8_t>("Mul");
+  QDQTransformerBinaryOpTests<uint8_t, uint8_t, uint8_t, false>("Mul");
+  QDQTransformerBinaryOpTests<int8_t, int8_t, int8_t, false>("Mul");
 }
 
 TEST(QDQTransformerTests, Mul_Have_Different_Types) {
-  QDQTransformerBinaryOpTests<uint8_t, int8_t, int8_t>("Mul");
-  QDQTransformerBinaryOpTests<uint8_t, uint8_t, int8_t>("Mul");
-  QDQTransformerBinaryOpTests<uint8_t, int8_t, uint8_t>("Mul");
-  QDQTransformerBinaryOpTests<int8_t, int8_t, int8_t>("Mul");
-  QDQTransformerBinaryOpTests<int8_t, uint8_t, int8_t>("Mul");
-  QDQTransformerBinaryOpTests<int8_t, int8_t, uint8_t>("Mul");
+  QDQTransformerBinaryOpTests<uint8_t, int8_t, int8_t, false>("Mul");
+  QDQTransformerBinaryOpTests<uint8_t, uint8_t, int8_t, false>("Mul");
+  QDQTransformerBinaryOpTests<uint8_t, int8_t, uint8_t, false>("Mul");
+  QDQTransformerBinaryOpTests<int8_t, int8_t, int8_t, false>("Mul");
+  QDQTransformerBinaryOpTests<int8_t, uint8_t, int8_t, false>("Mul");
+  QDQTransformerBinaryOpTests<int8_t, int8_t, uint8_t, false>("Mul");
 }
 
 template <typename Input1Type, typename Input2Type, typename OutputType>
