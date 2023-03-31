@@ -354,10 +354,10 @@ void NodeArg::ClearShape() {
 
 #if !defined(ORT_MINIMAL_BUILD)
 
-common::Status NodeArg::OverrideTypesHelper(const ONNX_NAMESPACE::TypeProto& input_type,
-                                            int32_t input_tensor_elem_type,
-                                            int32_t current_tensor_elem_type,
-                                            bool override_types) {
+Status NodeArg::OverrideTypesHelper(const ONNX_NAMESPACE::TypeProto& input_type,
+                                    int32_t input_tensor_elem_type,
+                                    int32_t current_tensor_elem_type,
+                                    bool override_types) {
   if (input_tensor_elem_type != current_tensor_elem_type) {
     if (override_types) {
       DataType inferred_type = DataTypeUtils::ToType(input_type);
@@ -380,8 +380,8 @@ common::Status NodeArg::OverrideTypesHelper(const ONNX_NAMESPACE::TypeProto& inp
   return Status::OK();
 }
 
-common::Status NodeArg::UpdateTypeAndShape(const ONNX_NAMESPACE::TypeProto& input_type, bool strict,
-                                           bool override_types, const logging::Logger& logger) {
+Status NodeArg::UpdateTypeAndShape(const ONNX_NAMESPACE::TypeProto& input_type, bool strict,
+                                   bool override_types, const logging::Logger& logger) {
   if (!utils::HasType(node_arg_info_)) {
     SetType(input_type);
     return Status::OK();
@@ -484,8 +484,8 @@ common::Status NodeArg::UpdateTypeAndShape(const ONNX_NAMESPACE::TypeProto& inpu
   return Status::OK();
 }
 
-common::Status NodeArg::UpdateTypeAndShape(const NodeArg& node_arg, bool strict, bool override_types,
-                                           const logging::Logger& logger) {
+Status NodeArg::UpdateTypeAndShape(const NodeArg& node_arg, bool strict, bool override_types,
+                                   const logging::Logger& logger) {
   auto status = Status::OK();
 
   if (utils::HasType(node_arg.node_arg_info_))
@@ -569,7 +569,7 @@ const Path& Node::ModelPath() const noexcept {
 bool Node::CanBeInlined() const {
   if (func_body_ || func_template_)
     return true;
-  if (! op_) return false;
+  if (!op_) return false;
   ONNX_NAMESPACE::FunctionProto function_proto;
   return TryGetFunctionProto(function_proto);
   // Note: We end up doing some redundant work, which can be eliminated if we cache
@@ -588,7 +588,7 @@ bool Node::TryGetFunctionProto(ONNX_NAMESPACE::FunctionProto& onnx_function_prot
       ToProto(node_proto);
       std::vector<TypeProto> input_types;
       for (size_t i = 0, n = InputDefs().size(); i < n; i++) {
-        auto p_node_arg = InputDefs().at(i);
+        auto p_node_arg = InputDefs()[i];
         if ((nullptr != p_node_arg) && p_node_arg->Exists()) {
           auto& type = *(p_node_arg->TypeAsProto());
           input_types.emplace_back(type);
@@ -2046,7 +2046,7 @@ class InferenceContextImpl : public ONNX_NAMESPACE::InferenceContext {
 
   const TypeProto* getInputType(size_t index) const override {
     const TypeProto* type = nullptr;
-    auto p_node_arg = node_.InputDefs().at(index);
+    auto p_node_arg = node_.InputDefs()[index];
     if ((nullptr != p_node_arg) && p_node_arg->Exists()) {
       type = p_node_arg->TypeAsProto();
     }
@@ -2428,7 +2428,7 @@ Status Graph::InferAndVerifyTypeMatch(Node& node, const OpSchema& op, const Reso
 }
 
 // Apply type-inference and type-checking to all inputs and initializers:
-common::Status Graph::TypeCheckInputsAndInitializers() {
+Status Graph::TypeCheckInputsAndInitializers() {
   // Check that the type of every input is specified:
   for (auto* graph_input : GetInputs()) {
     if (nullptr == graph_input->Type()) {
@@ -3100,8 +3100,8 @@ SaveInputsOutputsToOrtFormat(flatbuffers::FlatBufferBuilder& builder, const std:
   return builder.CreateVector(vec);
 }
 
-common::Status Graph::SaveToOrtFormat(flatbuffers::FlatBufferBuilder& builder,
-                                      flatbuffers::Offset<fbs::Graph>& fbs_graph) const {
+Status Graph::SaveToOrtFormat(flatbuffers::FlatBufferBuilder& builder,
+                              flatbuffers::Offset<fbs::Graph>& fbs_graph) const {
   auto inputs = SaveInputsOutputsToOrtFormat(builder, graph_inputs_including_initializers_);
   auto outputs = SaveInputsOutputsToOrtFormat(builder, graph_outputs_);
 
@@ -4319,8 +4319,8 @@ Graph::Graph(const Model& owning_model,
       is_loaded_from_model_file_(true) {  // true as the Graph isn't manually constructed from scratch
 }
 
-common::Status Graph::LoadFromOrtFormat(const onnxruntime::fbs::Graph& fbs_graph,
-                                        const OrtFormatLoadOptions& load_options) {
+Status Graph::LoadFromOrtFormat(const onnxruntime::fbs::Graph& fbs_graph,
+                                const OrtFormatLoadOptions& load_options) {
   // We deserialize the graph from ORT format in the following order:
   // 1. Deserialize the initializers and sparse initializers. Convert sparse to dense.
   // 2. Deserialize the NodeArgs

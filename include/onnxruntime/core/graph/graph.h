@@ -32,7 +32,6 @@
 #include "core/common/gsl.h"
 
 #include "core/common/common.h"
-#include "core/common/const_pointer_container.h"
 #include "core/common/inlined_containers_fwd.h"
 #include "core/common/path.h"
 #include "core/common/span_utils.h"
@@ -202,40 +201,40 @@ class Node {
   @param node_args Collection of NodeArgs returned by #InputDefs() or #OutputDefs()
   @param func Function to call for each valid NodeArg in the node_args. The function is called with the NodeArg
               and the index number in the container.
-  @returns common::Status with success or error information.
+  @returns Status with success or error information.
   @remarks Returns immediately on error.
   */
-  static common::Status ForEachWithIndex(const ConstPointerContainer<std::vector<NodeArg*>>& node_args,
-                                         std::function<common::Status(const NodeArg& arg, size_t index)> func) {
+  static Status ForEachWithIndex(gsl::span<const NodeArg* const> node_args,
+                                 std::function<Status(const NodeArg& arg, size_t index)> func) {
     for (size_t index = 0; index < node_args.size(); ++index) {
       auto arg = node_args[index];
       if (!arg->Exists())
         continue;
       ORT_RETURN_IF_ERROR(func(*arg, index));
     }
-    return common::Status::OK();
+    return Status::OK();
   }
 
   /** Gets the count of arguments for each of the Node's explicit inputs. */
   const std::vector<int>& InputArgCount() const noexcept { return definitions_.input_arg_count; }
 
-  /** Gets the Node's input definitions.
-  @remarks requires ConstPointerContainer wrapper to apply const to the NodeArg pointers so access is read-only. */
-  ConstPointerContainer<std::vector<NodeArg*>> InputDefs() const noexcept {
-    return ConstPointerContainer<std::vector<NodeArg*>>(definitions_.input_defs);
+  /** Gets the Node's input definitions. */
+  gsl::span<const NodeArg* const> InputDefs() const noexcept {
+    // the next line works on more recent compilers: gcc 10+, clang 7+
+    // return definitions_.input_defs;
+    return {definitions_.input_defs.data(), definitions_.input_defs.size()};
   }
 
   /** Gets the implicit inputs to this Node.
   If this Node contains a subgraph, these are the NodeArg's that are implicitly consumed by Nodes within that
   subgraph. e.g. If and Loop operators.*/
-  ConstPointerContainer<std::vector<NodeArg*>> ImplicitInputDefs() const noexcept {
-    return ConstPointerContainer<std::vector<NodeArg*>>(definitions_.implicit_input_defs);
+  gsl::span<const NodeArg* const> ImplicitInputDefs() const noexcept {
+    return {definitions_.implicit_input_defs.data(), definitions_.implicit_input_defs.size()};
   }
 
-  /** Gets the Node's output definitions.
-  @remarks requires ConstPointerContainer wrapper to apply const to the NodeArg pointers so access is read-only. */
-  ConstPointerContainer<std::vector<NodeArg*>> OutputDefs() const noexcept {
-    return ConstPointerContainer<std::vector<NodeArg*>>(definitions_.output_defs);
+  /** Gets the Node's output definitions. */
+  gsl::span<const NodeArg* const> OutputDefs() const noexcept {
+    return {definitions_.output_defs.data(), definitions_.output_defs.size()};
   }
 
 #if !defined(ORT_MINIMAL_BUILD)
@@ -244,18 +243,18 @@ class Node {
   @param node_args Collection of NodeArgs returned by #MutableInputDefs() or #MutableOutputDefs()
   @param func Function to call for each valid NodeArg in the node_args. The function is called with the NodeArg
               and the index number in the container.
-  @returns common::Status with success or error information.
+  @returns Status with success or error information.
   @remarks Returns immediately on error.
   */
-  static common::Status ForEachMutableWithIndex(std::vector<NodeArg*>& node_args,
-                                                std::function<common::Status(NodeArg& arg, size_t index)> func) {
+  static Status ForEachMutableWithIndex(std::vector<NodeArg*>& node_args,
+                                        std::function<Status(NodeArg& arg, size_t index)> func) {
     for (size_t index = 0; index < node_args.size(); ++index) {
       auto arg = node_args[index];
       if (!arg->Exists())
         continue;
       ORT_RETURN_IF_ERROR(func(*arg, index));
     }
-    return common::Status::OK();
+    return Status::OK();
   }
 
   /** Gets a modifiable collection of the Node's implicit input definitions. */
@@ -408,9 +407,9 @@ class Node {
 #endif  // !defined(ORT_MINIMAL_BUILD) || defined(ORT_EXTENDED_MINIMAL_BUILD)
 
   /**
-  * Clears removable attributes. These are no longer needed after the initialization
-  * of the session. The function returns the number of removed attributes.
-  */
+   * Clears removable attributes. These are no longer needed after the initialization
+   * of the session. The function returns the number of removed attributes.
+   */
   int PruneRemovableAttributes(gsl::span<const std::string> removable_attributes);
 
 #if !defined(ORT_MINIMAL_BUILD)
@@ -597,7 +596,7 @@ class Node {
   const std::vector<std::unique_ptr<Graph>>& MutableSubgraphs() noexcept { return subgraphs_; }
 
   // validate and update the input arg count
-  common::Status UpdateInputArgCount();
+  Status UpdateInputArgCount();
 
   const Definitions& GetDefinitions() const noexcept { return definitions_; }
   const Relationships& GetRelationships() const noexcept { return relationships_; }
@@ -659,7 +658,7 @@ class Node {
   std::vector<std::unique_ptr<Graph>> subgraphs_;
 
   // Can be saved? The node cannot be saved anymore if removable attributes have been cleared.
-  bool can_be_saved_;  
+  bool can_be_saved_;
 };
 
 /**
@@ -703,13 +702,13 @@ class Graph {
   Note: This currently has linear time complexity. There is room for improvement but it would likely require changes to
   how initializer tensors are stored and tracked.
   */
-  common::Status ReplaceInitializedTensor(ONNX_NAMESPACE::TensorProto new_initializer);
+  Status ReplaceInitializedTensor(ONNX_NAMESPACE::TensorProto new_initializer);
 
 #if !defined(DISABLE_EXTERNAL_INITIALIZERS)
   /** This function takes externally provided data for initializers with external data
    *    and replaces graph initializers with its content.
    */
-  common::Status InjectExternalInitializedTensors(const InlinedHashMap<std::string, OrtValue>& external_initializers);
+  Status InjectExternalInitializedTensors(const InlinedHashMap<std::string, OrtValue>& external_initializers);
 #endif  // !defined(DISABLE_EXTERNAL_INITIALIZERS)
 
 #endif  // !defined(ORT_MINIMAL_BUILD)
@@ -1274,11 +1273,11 @@ class Graph {
   2. Check & Setup inner nodes' dependency.
   3. Cleanup function definition lists.
   Note: the weights for training can't be cleaned during resolve.
-  @returns common::Status with success or error information.
+  @returns Status with success or error information.
   */
-  common::Status Resolve(const ResolveOptions& options);
+  Status Resolve(const ResolveOptions& options);
 
-  common::Status Resolve() {
+  Status Resolve() {
     ResolveOptions default_options;
     return Resolve(default_options);
   }
@@ -1287,8 +1286,8 @@ class Graph {
     return outer_scope_node_arg_names_;
   }
 
-  common::Status SaveToOrtFormat(flatbuffers::FlatBufferBuilder& builder,
-                                 flatbuffers::Offset<onnxruntime::fbs::Graph>& fbs_graph) const;
+  Status SaveToOrtFormat(flatbuffers::FlatBufferBuilder& builder,
+                         flatbuffers::Offset<onnxruntime::fbs::Graph>& fbs_graph) const;
 
 #endif  // !defined(ORT_MINIMAL_BUILD)
 
@@ -1298,8 +1297,8 @@ class Graph {
   /** Returns true if the name is for a value that is coming from outer scope */
   bool IsOuterScopeValue(const std::string& name) const {
     if (!parent_node_) return false;
-    const auto& implicit_input_defs = parent_node_->ImplicitInputDefs();
-    return std::any_of(implicit_input_defs.cbegin(), implicit_input_defs.cend(),
+    const auto implicit_input_defs = parent_node_->ImplicitInputDefs();
+    return std::any_of(implicit_input_defs.begin(), implicit_input_defs.end(),
                        [&name](const NodeArg* implicit_input) {
                          return implicit_input->Name() == name;
                        });
@@ -1452,7 +1451,7 @@ class Graph {
   };
 
   // Initialize all the graph inputs, initializers and outputs
-  common::Status InitInputsInitializersOutputs();
+  Status InitInputsInitializersOutputs();
 
   // Initialize overridable initializers container
   void ComputeOverridableInitializers();
@@ -1460,49 +1459,49 @@ class Graph {
 #if !defined(ORT_MINIMAL_BUILD)
   // Build and verify node connection (edges).
   // Verify NodeArg name/type/shape matching correctly.
-  common::Status BuildConnections(std::unordered_set<std::string>& outer_scope_node_args_consumed);
+  Status BuildConnections(std::unordered_set<std::string>& outer_scope_node_args_consumed);
 
-  common::Status VerifyNoDuplicateName();
+  Status VerifyNoDuplicateName();
 
   // Check whether <*this> graph is acyclic while performing a topological sort.
   // Depth-first going from bottom up through the graph and checking whether there are any back edges.
   // NodesInTopologicalOrder is updated with the nodes' indexes in topological
   // order if <Status> returned is "OK", otherwise it's undefined.
-  common::Status PerformTopologicalSortAndCheckIsAcyclic();
+  Status PerformTopologicalSortAndCheckIsAcyclic();
 
-  common::Status PerformTypeAndShapeInferencing(const ResolveOptions& options);
+  Status PerformTypeAndShapeInferencing(const ResolveOptions& options);
 
   // Recursively find all subgraphs including nested subgraphs
   void FindAllSubgraphs(std::vector<Graph*>& subgraphs);
 
   // Iterate this Graph instance and all subgraphs, calling the provided function for each.
-  common::Status ForThisAndAllSubgraphs(const std::vector<Graph*>& subgraphs, std::function<Status(Graph&)> func);
+  Status ForThisAndAllSubgraphs(const std::vector<Graph*>& subgraphs, std::function<Status(Graph&)> func);
 
-  common::Status InferAndVerifyTypeMatch(Node& node, const ONNX_NAMESPACE::OpSchema& op, const ResolveOptions& options);
+  Status InferAndVerifyTypeMatch(Node& node, const ONNX_NAMESPACE::OpSchema& op, const ResolveOptions& options);
 
   // perform type and shape inferencing on the subgraph and Resolve to validate
-  static common::Status InferAndVerifySubgraphTypes(const Node& node, Graph& subgraph,
-                                                    const std::vector<const ONNX_NAMESPACE::TypeProto*>& input_types,
-                                                    std::vector<const ONNX_NAMESPACE::TypeProto*>& output_types,
-                                                    const Graph::ResolveOptions& options);
+  static Status InferAndVerifySubgraphTypes(const Node& node, Graph& subgraph,
+                                            const std::vector<const ONNX_NAMESPACE::TypeProto*>& input_types,
+                                            std::vector<const ONNX_NAMESPACE::TypeProto*>& output_types,
+                                            const Graph::ResolveOptions& options);
 
   // Apply type-inference and type-checking to all inputs and initializers:
-  common::Status TypeCheckInputsAndInitializers();
+  Status TypeCheckInputsAndInitializers();
 
   // Compute set of input and initializer names and checking for duplicate names
-  common::Status VerifyInputAndInitializerNames();
+  Status VerifyInputAndInitializerNames();
 
   // Infer and set type information across <*this> graph if needed, and verify type/attribute
   // information matches between node and op.
 
-  common::Status VerifyNodeAndOpMatch(const ResolveOptions& options);
+  Status VerifyNodeAndOpMatch(const ResolveOptions& options);
 
   // Set graph inputs/outputs when resolving a graph..
-  common::Status SetGraphInputsOutputs();
+  Status SetGraphInputsOutputs();
 
   // recursively accumulate and set the outer scope node args in the resolve context for all subgraphs
   // so they can be used to resolve outer scope dependencies when running BuildConnections for the subgraphs.
-  common::Status SetOuterScopeNodeArgs(const std::unordered_set<std::string>& outer_scope_node_args);
+  Status SetOuterScopeNodeArgs(const std::unordered_set<std::string>& outer_scope_node_args);
 
   // Implementation for initializer replacement
   Status ReplaceInitializedTensorImpl(ONNX_NAMESPACE::TensorProto new_initializer, bool is_external);
