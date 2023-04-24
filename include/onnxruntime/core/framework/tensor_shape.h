@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <string>
 #include <cstring>
+#include <optional>
+#include <array>
 #include "core/common/gsl.h"
 #include "onnxruntime_config.h"
 
@@ -32,6 +34,14 @@
 #include "core/common/span_utils.h"
 
 namespace onnxruntime {
+using ShardDim = std::array<std::int32_t, 5>;
+using MemoryLocations = std::array<std::int32_t, 16>;
+
+struct ShardInfo {
+    ShardDim shardDims_{0};
+    MemoryLocations locations_{0};
+    ShardDim shardDims() const { return shardDims_; }
+};
 #ifdef __GNUC__
 #pragma GCC diagnostic push
 #ifdef HAS_NULL_DEREFERENCE
@@ -86,7 +96,7 @@ class TensorShape {
   TensorShape(std::initializer_list<int64_t> dims) : TensorShape(gsl::make_span(dims.begin(), dims.end())) {}
   TensorShape(const int64_t* dimension_sizes, size_t dimension_count) : TensorShape(gsl::span<const int64_t>(dimension_sizes, dimension_count)) {}
   TensorShape(const std::vector<int64_t>& dims, size_t start, size_t end) : TensorShape(gsl::span<const int64_t>(&dims[start], end - start)) {}
-
+  virtual ~TensorShape() = default;
   // Create a TensorShape that points to an existing buffer internally. As no copy is made, 'data' must remain valid for the life of the TensorShape
   static const TensorShape FromExistingBuffer(const std::vector<int64_t>& data) {
     return TensorShape(External{}, gsl::span<int64_t>(const_cast<int64_t*>(data.data()), data.size()));
@@ -181,6 +191,8 @@ class TensorShape {
     size_t len = values_.size();
     return len == 0 || (len == 1 && values_[0] == 1);
   }
+
+  virtual std::optional<ShardInfo> shardInfo() const { return std::nullopt; }
 
  private:
   struct External {};

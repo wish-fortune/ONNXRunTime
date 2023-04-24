@@ -16,11 +16,12 @@
 #include "onnxruntime_config.h"
 #include "core/framework/data_types.h"
 #include "core/framework/data_types_internal.h"
+#include "core/framework/storage.h"
 
 struct OrtValue;
 
 namespace onnxruntime {
-
+using ShardDims = TensorShapeVector;
 // TODO:ensure dtype_!=nullptr
 #ifdef __GNUC__
 #pragma GCC diagnostic push
@@ -57,6 +58,17 @@ class Tensor final {
   Tensor(MLDataType p_type, const TensorShape& shape, void* p_data, const OrtMemoryInfo& alloc,
          ptrdiff_t offset = 0, gsl::span<const int64_t> strides = {});
 
+  Tensor(MLDataType p_type, const TensorShape& shape, std::vector<std::shared_ptr<IAllocator>>&& allocators,
+               gsl::span<const int64_t> strides={});
+
+  Tensor(MLDataType p_type, const TensorShape& shape, std::unique_ptr<Storage>&& storage, const OrtMemoryInfo& alloc,
+               gsl::span<const int64_t> strides={});
+
+  static void InitOrtValue(MLDataType elt_type, const TensorShape& shape, std::unique_ptr<Storage>&& storage, const OrtMemoryInfo& alloc,
+                          OrtValue& ort_value, gsl::span<const int64_t> strides={});
+
+  static void InitOrtValue(MLDataType elt_type, const TensorShape& shape, std::vector<std::shared_ptr<IAllocator>>&& allocators,
+                          OrtValue& ort_value, gsl::span<const int64_t> strides={});
   /// <summary>
   /// Creates an instance of Tensor on the heap using the appropriate __ctor and
   /// initializes OrtValue with it.
@@ -187,7 +199,7 @@ class Tensor final {
     // Type check
     ORT_ENFORCE(utils::IsPrimitiveDataType<T>(dtype_), "Tensor type mismatch. ",
                 "T ", "!=", dtype_);
-    return reinterpret_cast<T*>(static_cast<char*>(p_data_) + byte_offset_);
+    return reinterpret_cast<T*>(storage_->Data(0));
   }
 
   /**
@@ -198,7 +210,7 @@ class Tensor final {
     // Type check
     ORT_ENFORCE(utils::IsPrimitiveDataType<T>(dtype_), "Tensor type mismatch. ",
                 "T ", "!=", dtype_);
-    T* data = reinterpret_cast<T*>(static_cast<char*>(p_data_) + byte_offset_);
+    T* data = reinterpret_cast<T*>(storage_->Data(0));
     return gsl::make_span(data, static_cast<size_t>(shape_.Size()));
   }
 
@@ -207,7 +219,7 @@ class Tensor final {
     // Type check
     ORT_ENFORCE(utils::IsPrimitiveDataType<T>(dtype_), "Tensor type mismatch. ",
                 "T ", "!=", dtype_);
-    return reinterpret_cast<const T*>(static_cast<char*>(p_data_) + byte_offset_);
+    return reinterpret_cast<const T*>(storage_->Data(0));
   }
 
   template <typename T>
@@ -215,32 +227,84 @@ class Tensor final {
     // Type check
     ORT_ENFORCE(utils::IsPrimitiveDataType<T>(dtype_), "Tensor type mismatch. ",
                 "T ", "!=", dtype_);
-    const T* data = reinterpret_cast<const T*>(static_cast<char*>(p_data_) + byte_offset_);
-    return gsl::make_span(data, static_cast<typename gsl::span<T>::size_type>(shape_.Size()));
+    const T* data = reinterpret_cast<const T*>(storage_->Data(0));
+    using TSize = typename gsl::span<T>::size_type;
+    auto numElems = static_cast<TSize>(shape_.Size());
+    return gsl::make_span(data, numElems);
   }
 
   void* MutableDataRaw(MLDataType type) {
     ORT_ENFORCE(type == dtype_, "Tensor type mismatch.", type, "!=", dtype_);
-    return static_cast<char*>(p_data_) + byte_offset_;
+    return storage_->Data(0);
   }
 
   const void* DataRaw(MLDataType type) const {
     ORT_ENFORCE(type == dtype_, "Tensor type mismatch.", type, "!=", dtype_);
-    return static_cast<char*>(p_data_) + byte_offset_;
+    return storage_->Data(0);
   }
 
   void* MutableDataRaw() noexcept {
-    return static_cast<char*>(p_data_) + byte_offset_;
+    return storage_->Data(0);
   }
 
   const void* DataRaw() const noexcept {
-    return static_cast<char*>(p_data_) + byte_offset_;
+    return storage_->Data(0);
   }
 
   bool OwnsBuffer() const noexcept {
-    return buffer_deleter_ != nullptr;
+    return storage_->OwnsBuffer();
   }
 
+  /** Accessors for shards */
+  template <typename T>
+  T* MutableData(uint32_t index) {
+    // Type check
+    ORT_ENFORCE(utils::IsPrimitiveDataType<T>(dtype_), "Tensor type mismatch. ",
+                "T ", "!=", dtype_);
+    return reinterpret_cast<T*>(storage_->Data(index));
+  }
+
+  template <typename T>
+  gsl::span<T> MutableDataAsSpan(uint32_t index) {
+    T* data = MutableData<T>(index);
+    auto numElems = static_cast<size_t>(storage_->Size(index) / dtype_->Size());
+    return gsl::make_span(data, static_cast<size_t>(numElems));
+  }
+
+  template <typename T>
+  const T* Data(uint32_t index) const {
+    // Type check
+    ORT_ENFORCE(utils::IsPrimitiveDataType<T>(dtype_), "Tensor type mismatch. ",
+                "T ", "!=", dtype_);
+    return reinterpret_cast<const T*>(storage_->Data(index));
+  }
+
+  template <typename T>
+  gsl::span<const T> DataAsSpan(uint32_t index) const {
+    // Type check
+    ORT_ENFORCE(utils::IsPrimitiveDataType<T>(dtype_), "Tensor type mismatch. ",
+                "T ", "!=", dtype_);
+    const T* data = reinterpret_cast<const T*>(storage_->Data(0));
+    using TSize = typename gsl::span<T>::size_type;
+    auto numElems = static_cast<TSize>(storage_->Size(index) / dtype_->Size());
+    return gsl::make_span(data, numElems);
+  }
+
+  void* MutableDataRaw(MLDataType type, uint32_t index) {
+    ORT_ENFORCE(type == dtype_, "Tensor type mismatch.", type, "!=", dtype_);
+    return storage_->Data(index);
+  }
+
+  const void* DataRaw(MLDataType type, uint32_t index) const {
+    ORT_ENFORCE(type == dtype_, "Tensor type mismatch.", type, "!=", dtype_);
+    return storage_->Data(index);
+  }
+
+  void* MutableDataRaw(uint32_t index) noexcept { return storage_->Data(index); }
+  const void* DataRaw(uint32_t index) const noexcept { return storage_->Data(index); }
+  /** End of accessors for shards */
+
+  //
   /**
    * Resizes the tensor without touching underlying storage.
    * This requires the total size of the tensor to remains constant.
@@ -259,7 +323,7 @@ class Tensor final {
    * @warning use with caution - make sure you do boundary check before calling this method (see view.cc)
    */
   inline ptrdiff_t ByteOffset() const {
-    return byte_offset_;
+    return storage_->Offset(0);
   }
 
   /**
@@ -267,7 +331,7 @@ class Tensor final {
    * @warning this is a temporary solution for reusing the buffer bigger than needed.
    */
   inline void SetByteOffset(ptrdiff_t byte_offset) {
-    byte_offset_ = byte_offset;
+    storage_->SetOffset(byte_offset);
   }
 
   /**
@@ -291,14 +355,13 @@ class Tensor final {
    */
   void SetShapeAndStrides(const TensorShape& new_shape, gsl::span<const int64_t> new_strides);
 #endif
+  Storage* GetStorage() const { return storage_.get(); }
 
   // More API methods.
  private:
   void Init(MLDataType p_type,
+            std::unique_ptr<Storage>&& storage,
             const TensorShape& shape,
-            void* p_raw_data,
-            AllocatorPtr deleter,
-            ptrdiff_t offset = 0,
             gsl::span<const int64_t> strides = {});
 
   void ReleaseBuffer();
@@ -306,14 +369,7 @@ class Tensor final {
 #ifdef ENABLE_STRIDED_TENSORS
   bool CheckIsContiguous() const;
 #endif
-
-  void* p_data_;
-  /**
-     if buffer_deleter_ is null, it means tensor does not own the buffer.
-     otherwise tensor will use the deleter to release the buffer when
-     tensor is released.
-  */
-  AllocatorPtr buffer_deleter_;
+  std::unique_ptr<Storage> storage_;
 
   TensorShape shape_;
 #ifdef ENABLE_STRIDED_TENSORS
@@ -323,7 +379,6 @@ class Tensor final {
 
   const PrimitiveDataTypeBase* dtype_;
   OrtMemoryInfo alloc_info_;
-  ptrdiff_t byte_offset_;
 };
 #ifdef __GNUC__
 #pragma GCC diagnostic pop

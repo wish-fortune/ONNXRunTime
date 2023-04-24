@@ -6,6 +6,11 @@
 #include <string_view>
 
 #include "core/common/hash_combine.h"
+enum class MemoryLocation : std::int32_t
+{
+    Invalid = -1,
+    Uniform = 0,
+};
 
 struct OrtMemoryInfo {
   OrtMemoryInfo() = default;  // to allow default construction of Tensor
@@ -15,6 +20,7 @@ struct OrtMemoryInfo {
   int id = -1;
   OrtMemType mem_type = OrtMemTypeDefault;
   OrtAllocatorType alloc_type = OrtInvalidAllocator;
+  MemoryLocation location = MemoryLocation::Uniform;
   OrtDevice device;
 
   constexpr OrtMemoryInfo(const char* name_, OrtAllocatorType type_, OrtDevice device_ = OrtDevice(), int id_ = 0,
@@ -29,6 +35,8 @@ struct OrtMemoryInfo {
         alloc_type(type_),
         device(device_) {
   }
+
+  OrtMemoryInfo& SetLocation(MemoryLocation loc) { location = loc; return *this; }
 
   // To make OrtMemoryInfo become a valid key in std map
   bool operator<(const OrtMemoryInfo& other) const {
