@@ -517,4 +517,5 @@ FILE(TO_NATIVE_PATH ${PROJECT_SOURCE_DIR}  ORT_SOURCE_DIR)
 
 if (onnxruntime_USE_AZURE)
     include(triton)
+    # include(curl)
 endif()
