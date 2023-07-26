@@ -581,8 +581,8 @@ def _load_single_checkpoint(model, checkpoint_dir, checkpoint_prefix, is_partiti
     if is_partitioned:
         assert_msg = (
             "Couldn't find checkpoint file {}."
-            + "Optimizer partitioning is enabled using ZeRO. Please make sure that the "
-            + "checkpoint file exists for rank {} of {}."
+            "Optimizer partitioning is enabled using ZeRO. Please make sure that the "
+            "checkpoint file exists for rank {} of {}."
         ).format(checkpoint_file, model.world_rank, model.world_size)
     else:
         assert_msg = f"Couldn't find checkpoint file {checkpoint_file}."
@@ -606,7 +606,7 @@ def _load_multi_checkpoint(model, checkpoint_dir, checkpoint_prefix, strict):
 
     # aggregate other keys in the state_dict.
     # Values will be overwritten for matching keys among workers
-    all_checkpoint_states = dict()
+    all_checkpoint_states = {}
     for checkpoint_file in checkpoint_files:
         checkpoint_state = torch.load(checkpoint_file, map_location="cpu")
         del checkpoint_state["model"]
@@ -620,7 +620,7 @@ def load_checkpoint(model, checkpoint_dir, checkpoint_prefix="ORT_checkpoint", s
     if len(checkpoint_files) > 1:
         warnings.warn(
             f"Found more than one file with prefix {checkpoint_prefix} in directory {checkpoint_dir}."
-            + "Attempting to load ZeRO checkpoint."
+            "Attempting to load ZeRO checkpoint."
         )
         is_partitioned = True
     if (not model.deepspeed_zero_stage_) and is_partitioned:
@@ -1181,14 +1181,18 @@ class ORTTrainer:
     def _verify_fully_optimized_model(self, model):
         assert len(model.graph.output) > 0
         # model's first output must be the loss tensor
-        if (
-            model.graph.output[0].type.tensor_type.elem_type != onnx.TensorProto().FLOAT
-            and model.graph.output[0].type.tensor_type.elem_type != onnx.TensorProto().FLOAT16
-            and model.graph.output[0].type.tensor_type.elem_type != onnx.TensorProto().DOUBLE
-            and model.graph.output[0].type.tensor_type.elem_type != onnx.TensorProto().COMPLEX64
-            and model.graph.output[0].type.tensor_type.elem_type != onnx.TensorProto().COMPLEX128
-            and model.graph.output[0].type.tensor_type.elem_type != onnx.TensorProto().BFLOAT16
-        ):
+        if model.graph.output[0].type.tensor_type.elem_type not in {
+            onnx.TensorProto.FLOAT,
+            onnx.TensorProto.FLOAT16,
+            onnx.TensorProto.DOUBLE,
+            onnx.TensorProto.COMPLEX64,
+            onnx.TensorProto.COMPLEX128,
+            onnx.TensorProto.BFLOAT16,
+            onnx.TensorProto.FLOAT8E4M3FN,
+            onnx.TensorProto.FLOAT8E4M3FNUZ,
+            onnx.TensorProto.FLOAT8E5M2,
+            onnx.TensorProto.FLOAT8E5M2FNUZ,
+        }:
             raise RuntimeError(
                 "the first output of a model to run with fully optimized ORT backend must be float types."
             )
@@ -1203,10 +1207,10 @@ class LossScaler:
         self,
         loss_scale_input_name,
         is_dynamic_scale,
-        loss_scale=float(1 << 16),  # noqa: B008
+        loss_scale=float(1 << 16),
         up_scale_window=2000,
         min_loss_scale=1.0,
-        max_loss_scale=float(1 << 24),  # noqa: B008
+        max_loss_scale=float(1 << 24),
     ):
         super().__init__()
         self.loss_scale_input_name_ = loss_scale_input_name

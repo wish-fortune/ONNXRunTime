@@ -195,6 +195,7 @@ class SymbolicShapeInference:
             "RestorePadding": self._infer_RestorePadding,
             "BiasGelu": self._infer_BiasGelu,
             "MultiHeadAttention": self._infer_MultiHeadAttention,
+            "DecoderMaskedMultiHeadAttention": self._infer_DecoderMaskedMultiHeadAttention,
             "EmbedLayerNormalization": self._infer_EmbedLayerNormalization,
             "FastGelu": self._infer_FastGelu,
             "Gelu": self._infer_Gelu,
@@ -491,12 +492,13 @@ class SymbolicShapeInference:
 
         for i_o in range(len(node.output)):
             o = node.output[i_o]
-            vi = self.out_mp_.graph.value_info.add()
-            if not skip_infer:
-                vi.CopyFrom(self.tmp_mp_.graph.output[i_o])
-            else:
-                vi.name = o
-            self.known_vi_[o] = vi
+            if o:  # skip optional output
+                vi = self.out_mp_.graph.value_info.add()
+                if not skip_infer:
+                    vi.CopyFrom(self.tmp_mp_.graph.output[i_o])
+                else:
+                    vi.name = o
+                self.known_vi_[o] = vi
 
     def _onnx_infer_subgraph(self, node, subgraph, use_node_input=True, inc_subgraph_id=True):
         if self.verbose_ > 2:
@@ -745,7 +747,7 @@ class SymbolicShapeInference:
         else:
             lhs_reduce_dim = -1
             rhs_reduce_dim = -2
-            new_shape = [*self._broadcast_shapes(lhs_shape[:-2], rhs_shape[:-2]), lhs_shape[-2]] + [rhs_shape[-1]]
+            new_shape = [*self._broadcast_shapes(lhs_shape[:-2], rhs_shape[:-2]), lhs_shape[-2], rhs_shape[-1]]
         # merge reduce dim
         self._check_merged_dims(
             [lhs_shape[lhs_reduce_dim], rhs_shape[rhs_reduce_dim]],
@@ -1392,7 +1394,7 @@ class SymbolicShapeInference:
 
     def _infer_aten_argmax(self, node):
         new_shape = None
-        if node.input[1] == "":
+        if not node.input[1]:
             # The argmax of the flattened input is returned.
             new_shape = []
         else:
@@ -1458,7 +1460,7 @@ class SymbolicShapeInference:
 
         # this works for opsets < 14 and 14 since we check i < len(node.output) in the loop
         for i in [1, 2, 3, 4]:
-            if i < len(node.output) and node.output[i] != "":
+            if i < len(node.output) and node.output[i]:
                 # all of these parameters have the same shape as the 1st input
                 self._propagate_shape_and_type(node, input_index=1, output_index=i)
 
@@ -1932,7 +1934,7 @@ class SymbolicShapeInference:
                 if len(symbolic_dimensions) > 0:
                     logger.debug(
                         f"Symbolic dimensions in input shape of op: '{node.op_type}' node: '{node.name}'. "
-                        + f"Assuming the following dimensions are never equal to 1: {symbolic_dimensions}"
+                        f"Assuming the following dimensions are never equal to 1: {symbolic_dimensions}"
                     )
         else:
             axes = [handle_negative_axis(a, len(input_shape)) for a in axes]
@@ -1945,7 +1947,7 @@ class SymbolicShapeInference:
                     if self.verbose_ > 0 and type(input_shape[i]) != int:
                         logger.debug(
                             f"Symbolic dimensions in input shape of op: '{node.op_type}' node: '{node.name}'. "
-                            + f"Assuming the dimension '{input_shape[i]}' at index {i} of the input to be equal to 1."
+                            f"Assuming the dimension '{input_shape[i]}' at index {i} of the input to be equal to 1."
                         )
 
         vi = self.known_vi_[node.output[0]]
@@ -2090,8 +2092,9 @@ class SymbolicShapeInference:
                 # mask shape: (batch_size, total_sequence_length) or (batch_size, sequence_length, total_sequence_length) or (batch_size, 1, max_seq_len, max_seq_len)
                 # present shape: (2, batch_size, num_heads, total_sequence_length, head_size), where total_sequence_length=sequence_length+past_sequence_length
                 input_shape = self._get_shape(node, 0)
-                past_shape = self._get_shape(node, 4)
-                mask_shape = self._get_shape(node, 3)
+                past_shape = self._get_shape(node, 4) if len(node.input) > 4 and node.input[4] else []
+                mask_shape = self._get_shape(node, 3) if len(node.input) > 3 and node.input[3] else []
+
                 if past_shape and len(past_shape) == 5:
                     if mask_shape and len(mask_shape) in [2, 3]:
                         past_shape[3] = mask_shape[-1]
@@ -2102,6 +2105,13 @@ class SymbolicShapeInference:
                             past_shape[3] = f"{past_shape[3]}+{input_shape[1]}"
                     vi = self.known_vi_[node.output[1]]
                     vi.CopyFrom(helper.make_tensor_value_info(vi.name, output_dtype, past_shape))
+                # No past input but present output still exists
+                else:
+                    num_heads = get_attribute(node, "num_heads")
+                    head_size = input_shape[2] // num_heads
+                    present_shape = [2, input_shape[0], num_heads, input_shape[1], head_size]
+                    vi = self.known_vi_[node.output[1]]
+                    vi.CopyFrom(helper.make_tensor_value_info(vi.name, output_dtype, present_shape))
 
     def _infer_PackedAttention(self, node):  # noqa: N802
         shape = self._get_shape(node, 0)
@@ -2224,10 +2234,33 @@ class SymbolicShapeInference:
                 present_shape = [batch_size, num_heads, total_sequence_length, head_size]
 
                 assert output_dtype is not None
-                vi = self.known_vi_[node.output[1]]
-                vi.CopyFrom(helper.make_tensor_value_info(vi.name, output_dtype, present_shape))
-                vi = self.known_vi_[node.output[2]]
-                vi.CopyFrom(helper.make_tensor_value_info(vi.name, output_dtype, present_shape))
+                if len(node.output) > 2 and node.output[1] and node.output[2]:
+                    vi = self.known_vi_[node.output[1]]
+                    vi.CopyFrom(helper.make_tensor_value_info(vi.name, output_dtype, present_shape))
+                    vi = self.known_vi_[node.output[2]]
+                    vi.CopyFrom(helper.make_tensor_value_info(vi.name, output_dtype, present_shape))
+
+    def _infer_DecoderMaskedMultiHeadAttention(self, node):  # noqa: N802
+        # Output 0 has shape (batch_size, 1, v_hidden_size)
+        # Q, K and V without packing:
+        #   Input 0 (query) has shape (batch_size, 1, hidden_size)
+        #   Input 5 (past_key) if exists has shape (batch_size, num_heads, max_sequence_length, head_size)
+
+        query_shape = self._get_shape(node, 0)
+        if query_shape is not None:
+            output_shape = query_shape
+            output_dtype = self.known_vi_[node.input[0]].type.tensor_type.elem_type
+            assert output_dtype is not None
+            vi = self.known_vi_[node.output[0]]
+            vi.CopyFrom(helper.make_tensor_value_info(node.output[0], output_dtype, output_shape))
+
+            if len(node.output) > 2 and node.output[1] and node.output[2]:
+                past_shape = self._try_get_shape(node, 5)
+                if past_shape is not None:
+                    vi = self.known_vi_[node.output[1]]
+                    vi.CopyFrom(helper.make_tensor_value_info(vi.name, output_dtype, past_shape))
+                    vi = self.known_vi_[node.output[2]]
+                    vi.CopyFrom(helper.make_tensor_value_info(vi.name, output_dtype, past_shape))
 
     def _infer_FastGelu(self, node):  # noqa: N802
         self._propagate_shape_and_type(node)
@@ -2240,6 +2273,23 @@ class SymbolicShapeInference:
 
     def _infer_LayerNormalization(self, node):  # noqa: N802
         self._propagate_shape_and_type(node)
+        if len(node.output) > 1:
+            axis = get_attribute(node, "axis")
+            if axis is None:
+                axis = -1
+            x_shape = self._get_shape(node, 0)
+            if x_shape is not None:
+                rank = len(x_shape)
+                axis = handle_negative_axis(axis, rank)
+                mean_shape = x_shape[:axis] + [1 for _ in range(rank - axis)]
+                mean_dtype = self.known_vi_[node.input[0]].type.tensor_type.elem_type
+                if mean_dtype == onnx.TensorProto.FLOAT16 or mean_dtype == onnx.TensorProto.BFLOAT16:
+                    mean_dtype = onnx.TensorProto.FLOAT
+                vi = self.known_vi_[node.output[1]]
+                vi.CopyFrom(helper.make_tensor_value_info(node.output[1], mean_dtype, mean_shape))
+                if len(node.output) > 2:
+                    vi = self.known_vi_[node.output[2]]
+                    vi.CopyFrom(helper.make_tensor_value_info(node.output[2], mean_dtype, mean_shape))
 
     def _infer_LongformerAttention(self, node):  # noqa: N802
         self._propagate_shape_and_type(node)
@@ -2254,9 +2304,10 @@ class SymbolicShapeInference:
         vi = self.known_vi_[node.output[0]]
         vi.CopyFrom(helper.make_tensor_value_info(node.output[0], word_embedding_dtype, output_shape))
 
-        mask_index_shape = [input_ids_shape[0]]
-        vi = self.known_vi_[node.output[1]]
-        vi.CopyFrom(helper.make_tensor_value_info(node.output[1], onnx.TensorProto.INT32, mask_index_shape))
+        if len(node.output) > 1 and node.output[1]:
+            mask_index_shape = [input_ids_shape[0]]
+            vi = self.known_vi_[node.output[1]]
+            vi.CopyFrom(helper.make_tensor_value_info(node.output[1], onnx.TensorProto.INT32, mask_index_shape))
 
         if len(node.output) > 2:
             # Optional output of add before layer normalization is done
@@ -2649,10 +2700,16 @@ class SymbolicShapeInference:
                         logger.debug("Stopping at incomplete shape inference at " + node.op_type + ": " + node.name)
                         logger.debug("node inputs:")
                         for i in node.input:
-                            logger.debug(self.known_vi_[i])
+                            if i in self.known_vi_:
+                                logger.debug(self.known_vi_[i])
+                            else:
+                                logger.debug(f"not in knwon_vi_ for {i}")
                         logger.debug("node outputs:")
                         for o in node.output:
-                            logger.debug(self.known_vi_[o])
+                            if o in self.known_vi_:
+                                logger.debug(self.known_vi_[o])
+                            else:
+                                logger.debug(f"not in knwon_vi_ for {o}")
                         if self.auto_merge_ and not out_type_undefined:
                             logger.debug("Merging: " + str(self.suggested_merge_))
                     return False

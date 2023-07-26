@@ -3,6 +3,7 @@
 
 import logging
 import pathlib
+from typing import Optional
 
 import onnx
 from onnx import version_converter
@@ -59,7 +60,10 @@ def get_opsets_imported(model: onnx.ModelProto):
 
 
 def update_onnx_opset(
-    model_path: pathlib.Path, opset: int, out_path: pathlib.Path = None, logger: logging.Logger = None
+    model_path: pathlib.Path,
+    opset: int,
+    out_path: Optional[pathlib.Path] = None,
+    logger: Optional[logging.Logger] = None,
 ):
     """
     Helper to update the opset of a model using onnx version_converter. Target opset must be greater than current opset.
@@ -319,7 +323,7 @@ def get_producer_consumer_maps(graph: onnx.GraphProto):
     # top level graph should have no implicit inputs
     if implicit_inputs:
         raise ValueError(
-            "This appears to be an invalid model with missing inputs of " f'{",".join(sorted(implicit_inputs))}'
+            f'This appears to be an invalid model with missing inputs of {",".join(sorted(implicit_inputs))}'
         )
 
     return node_to_producers, node_to_consumers

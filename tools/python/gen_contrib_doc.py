@@ -398,7 +398,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--domains",
         nargs="+",
-        help="Filter to specified domains. " "e.g. `--domains com.microsoft com.microsoft.nchwc`",
+        help="Filter to specified domains. " "e.g. `--domains com.microsoft com.microsoft.nchwc`",  # noqa: ISC001
     )
     parser.add_argument(
         "--output_path",

@@ -47,8 +47,8 @@ std::unique_ptr<ONNX_NAMESPACE::OpSchema> CreateSchema(
     // Due to this, a user of this style of schema must manually check whether any applicable type constraints
     // for each input or output are satisfied prior to creating a node that uses this schema
     //
-    op_schema->TypeConstraint("TAggregatedTypes", ONNX_NAMESPACE::OpSchema::all_tensor_types_with_bfloat(),
-                              "all_tensor_types_with_bfloat");
+    op_schema->TypeConstraint("TAggregatedTypes", ONNX_NAMESPACE::OpSchema::all_tensor_types_ir4(),
+                              "all_tensor_types_ir4");
   }
 
   int i = 0;
@@ -99,10 +99,10 @@ static void IOTypeConstraintHelper(const ONNX_NAMESPACE::FunctionProto& onnx_fun
   // Create an all permissive list of data types. This will be used in case of model local functions
   // when we cannot infer the type constraints from function proto body
   InlinedHashSet<std::string_view> all_types;
-  all_types.reserve(ONNX_NAMESPACE::OpSchema::all_tensor_types_with_bfloat().size() +
+  all_types.reserve(ONNX_NAMESPACE::OpSchema::all_tensor_types_ir4().size() +
                     ONNX_NAMESPACE::OpSchema::all_tensor_sequence_types().size());
-  all_types.insert(ONNX_NAMESPACE::OpSchema::all_tensor_types_with_bfloat().cbegin(),
-                   ONNX_NAMESPACE::OpSchema::all_tensor_types_with_bfloat().cend());
+  all_types.insert(ONNX_NAMESPACE::OpSchema::all_tensor_types_ir4().cbegin(),
+                   ONNX_NAMESPACE::OpSchema::all_tensor_types_ir4().cend());
   all_types.insert(ONNX_NAMESPACE::OpSchema::all_tensor_sequence_types().cbegin(),
                    ONNX_NAMESPACE::OpSchema::all_tensor_sequence_types().cend());
 
@@ -483,7 +483,15 @@ void Specialize(ONNX_NAMESPACE::FunctionProto& called_function, const ONNX_NAMES
 void Specialize(ONNX_NAMESPACE::FunctionProto& called_function, Node& calling_node, std::string unique_prefix) {
   ONNX_NAMESPACE::NodeProto calling_node_proto;
   calling_node.ToProto(calling_node_proto);
-  Specialize(called_function, calling_node_proto, calling_node.GetAttributes(), unique_prefix);
+
+  onnxruntime::NodeAttributes attr_map = calling_node.GetAttributes();
+  for (auto& attribute_proto : called_function.attribute_proto()) {
+    auto entry = attr_map.find(attribute_proto.name());
+    if (entry == attr_map.cend()) {
+      attr_map[attribute_proto.name()] = attribute_proto;
+    }
+  }
+  Specialize(called_function, calling_node_proto, attr_map, unique_prefix);
 }
 
 }  // namespace function_utils

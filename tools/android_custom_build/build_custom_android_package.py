@@ -70,14 +70,14 @@ def parse_args():
         "--config",
         choices=["Debug", "MinSizeRel", "Release", "RelWithDebInfo"],
         default=default_config,
-        help="The build configuration. " f"The default is {default_config}.",
+        help=f"The build configuration. The default is {default_config}.",
     )
 
     default_docker_image_tag = "onnxruntime-android-custom-build:latest"
     parser.add_argument(
         "--docker_image_tag",
         default=default_docker_image_tag,
-        help="The tag for the Docker image. " f"The default is {default_docker_image_tag}.",
+        help=f"The tag for the Docker image. The default is {default_docker_image_tag}.",
     )
 
     parser.add_argument(
@@ -120,7 +120,8 @@ def main():
         "--file",
         str(SCRIPT_DIR / "Dockerfile"),
         *docker_build_image_args,
-    ] + [str(SCRIPT_DIR)]
+        str(SCRIPT_DIR),
+    ]
 
     run(docker_build_image_cmd)
 
@@ -154,7 +155,10 @@ def main():
     # enable use of Ctrl-C to stop when running interactively
     docker_run_interactive_args = ["-it"] if sys.stdin.isatty() else []
 
-    docker_container_build_cmd = [args.docker_path, "run", *docker_run_interactive_args] + [
+    docker_container_build_cmd = [
+        args.docker_path,
+        "run",
+        *docker_run_interactive_args,
         f"--name={args.docker_container_name}" if args.docker_container_name is not None else "--rm",
         f"--volume={working_dir}:/workspace/shared",
         args.docker_image_tag,

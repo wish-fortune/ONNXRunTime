@@ -74,6 +74,12 @@ std::string RocmTuningResultsValidator::GetOrtBuildConfig() const {
 #else
   oss << "USE_ROCBLAS_EXTENSION_API=" << 0 << "|";
 #endif
+
+#ifdef USE_HIPBLASLT
+  oss << "USE_HIPBLASLT=" << 1 << "|";
+#else
+  oss << "USE_HIPBLASLT=" << 0 << "|";
+#endif
   return oss.str();
 }
 
@@ -106,6 +112,14 @@ void RocmTuningContext::DisableTuning() {
 
 bool RocmTuningContext::IsTuningEnabled() const {
   return info_->tuning_enable;
+}
+
+void RocmTuningContext::SetMaxTuningDurationMs(int max_duration_ms) {
+  info_->max_tuning_duration_ms = max_duration_ms;
+}
+
+int RocmTuningContext::GetMaxTuningDurationMs() const {
+  return info_->max_tuning_duration_ms > 0 ? info_->max_tuning_duration_ms : std::numeric_limits<int>::max();
 }
 
 TuningResultsManager& RocmTuningContext::GetTuningResultsManager() {

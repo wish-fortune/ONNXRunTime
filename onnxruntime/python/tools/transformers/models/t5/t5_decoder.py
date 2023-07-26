@@ -9,7 +9,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import List, Union
+from typing import List, Optional, Union
 
 import numpy
 import onnx
@@ -38,7 +38,7 @@ class T5DecoderInit(torch.nn.Module):
         decoder: torch.nn.Module,
         lm_head: torch.nn.Module,
         config: Union[T5Config, MT5Config],
-        decoder_start_token_id: int = None,
+        decoder_start_token_id: Optional[int] = None,
     ):
         super().__init__()
         self.decoder = decoder
@@ -427,8 +427,11 @@ class T5DecoderHelper:
 
             test_cases_max_diff.append(max_diff_all)
             logger.info(
-                f"batch_size={batch_size}, encode_sequence_length={encode_sequence_length}, "
-                + f"past_decode_sequence_length={past_decode_sequence_length}, max_diff={max_diff_all}"
+                "batch_size=%s, encode_sequence_length=%s, past_decode_sequence_length=%s, max_diff=%s",
+                batch_size,
+                encode_sequence_length,
+                past_decode_sequence_length,
+                max_diff_all,
             )
 
         return max_diff_all

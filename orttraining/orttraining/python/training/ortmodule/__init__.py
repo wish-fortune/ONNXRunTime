@@ -111,7 +111,7 @@ torch.cuda.manual_seed = override_torch_cuda_manual_seed
 
 
 def _use_deterministic_algorithms(enabled):
-    global ORTMODULE_IS_DETERMINISTIC
+    global ORTMODULE_IS_DETERMINISTIC  # noqa: PLW0603
     ORTMODULE_IS_DETERMINISTIC = enabled
 
 
@@ -120,7 +120,8 @@ def _are_deterministic_algorithms_enabled():
     return ORTMODULE_IS_DETERMINISTIC
 
 
-from .debug_options import DebugOptions, LogLevel  # noqa: E402, F401
+from .graph_transformer_registry import register_graph_transformer  # noqa: E402, F401
+from .options import DebugOptions, LogLevel  # noqa: E402, F401
 
 # ORTModule must be loaded only after all validation passes
 from .ortmodule import ORTModule  # noqa: E402, F401

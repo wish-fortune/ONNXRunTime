@@ -20,6 +20,8 @@ if typing.TYPE_CHECKING:
 def get_ort_device_type(device_type: str, device_index) -> C.OrtDevice:
     if device_type == "cuda":
         return C.OrtDevice.cuda()
+    elif device_type == "cann":
+        return C.OrtDevice.cann()
     elif device_type == "cpu":
         return C.OrtDevice.cpu()
     elif device_type == "ort":
@@ -29,7 +31,7 @@ def get_ort_device_type(device_type: str, device_index) -> C.OrtDevice:
 
 
 def check_and_normalize_provider_args(
-    providers: Sequence[str, tuple[str, dict[Any, Any]]] | None,
+    providers: Sequence[str | tuple[str, dict[Any, Any]]] | None,
     provider_options: Sequence[dict[Any, Any]] | None,
     available_provider_names: Sequence[str],
 ):
@@ -185,6 +187,16 @@ class Session:
         """
         self._enable_fallback = True
 
+    def _validate_input(self, feed_input_names):
+        missing_input_names = []
+        for input in self._inputs_meta:
+            if input.name not in feed_input_names and not input.type.startswith("optional"):
+                missing_input_names.append(input.name)
+        if missing_input_names:
+            raise ValueError(
+                f"Required inputs ({missing_input_names}) are missing from input feed ({feed_input_names})."
+            )
+
     def run(self, output_names, input_feed, run_options=None):
         """
         Compute the predictions.
@@ -199,18 +211,14 @@ class Session:
 
             sess.run([output_name], {input_name: x})
         """
-        num_required_inputs = len(self._inputs_meta)
-        num_inputs = len(input_feed)
-        # the graph may have optional inputs used to override initializers. allow for that.
-        if num_inputs < num_required_inputs:
-            raise ValueError(f"Model requires {num_required_inputs} inputs. Input Feed contains {num_inputs}")
+        self._validate_input(list(input_feed.keys()))
         if not output_names:
             output_names = [output.name for output in self._outputs_meta]
         try:
             return self._sess.run(output_names, input_feed, run_options)
         except C.EPFail as err:
             if self._enable_fallback:
-                print(f"EP Error: {str(err)} using {self._providers}")
+                print(f"EP Error: {err!s} using {self._providers}")
                 print(f"Falling back to {self._fallback_providers} and retrying.")
                 self.set_providers(self._fallback_providers)
                 # Fallback only once.
@@ -244,18 +252,14 @@ class Session:
             ort_values = [OrtValue(v) for v in result]
             return ort_values
 
-        num_required_inputs = len(self._inputs_meta)
-        num_inputs = len(input_dict_ort_values)
-        # the graph may have optional inputs used to override initializers. allow for that.
-        if num_inputs < num_required_inputs:
-            raise ValueError(f"Model requires {num_required_inputs} inputs. Input Feed contains {num_inputs}")
+        self._validate_input(list(input_dict_ort_values.keys()))
         if not output_names:
             output_names = [output.name for output in self._outputs_meta]
         try:
             return invoke(self._sess, output_names, input_dict_ort_values, run_options)
         except C.EPFail as err:
             if self._enable_fallback:
-                print(f"EP Error: {str(err)} using {self._providers}")
+                print(f"EP Error: {err!s} using {self._providers}")
                 print(f"Falling back to {self._fallback_providers} and retrying.")
                 self.set_providers(self._fallback_providers)
                 # Fallback only once.
@@ -323,7 +327,7 @@ class InferenceSession(Session):
         self,
         path_or_bytes: str | bytes | os.PathLike,
         sess_options: Sequence[onnxruntime.SessionOptions] | None = None,
-        providers: Sequence[str, tuple[str, dict[Any, Any]]] | None = None,
+        providers: Sequence[str | tuple[str, dict[Any, Any]]] | None = None,
         provider_options: Sequence[dict[Any, Any]] | None = None,
         **kwargs,
     ) -> None:
@@ -359,11 +363,8 @@ class InferenceSession(Session):
         """
         super().__init__()
 
-        if isinstance(path_or_bytes, str):
-            self._model_path = path_or_bytes
-            self._model_bytes = None
-        elif isinstance(path_or_bytes, os.PathLike):
-            self._model_path = str(path_or_bytes)
+        if isinstance(path_or_bytes, (str, os.PathLike)):
+            self._model_path = os.fspath(path_or_bytes)
             self._model_bytes = None
         elif isinstance(path_or_bytes, bytes):
             self._model_path = None
@@ -374,7 +375,10 @@ class InferenceSession(Session):
         self._sess_options = sess_options
         self._sess_options_initial = sess_options
         self._enable_fallback = True
-        self._read_config_from_model = os.environ.get("ORT_LOAD_CONFIG_FROM_MODEL") == "1"
+        if "read_config_from_model" in kwargs:
+            self._read_config_from_model = int(kwargs["read_config_from_model"]) == 1
+        else:
+            self._read_config_from_model = os.environ.get("ORT_LOAD_CONFIG_FROM_MODEL") == "1"
 
         # internal parameters that we don't expect to be used in general so aren't documented
         disabled_optimizers = kwargs["disabled_optimizers"] if "disabled_optimizers" in kwargs else None
@@ -410,13 +414,13 @@ class InferenceSession(Session):
         providers, provider_options = check_and_normalize_provider_args(
             providers, provider_options, available_providers
         )
-        if providers == [] and len(available_providers) > 1:
+        if not providers and len(available_providers) > 1:
             self.disable_fallback()
             raise ValueError(
                 f"This ORT build has {available_providers} enabled. "
-                + "Since ORT 1.9, you are required to explicitly set "
-                + "the providers parameter when instantiating InferenceSession. For example, "
-                "onnxruntime.InferenceSession(..., providers={}, ...)".format(available_providers)
+                "Since ORT 1.9, you are required to explicitly set "
+                "the providers parameter when instantiating InferenceSession. For example, "
+                f"onnxruntime.InferenceSession(..., providers={available_providers}, ...)"
             )
 
         session_options = self._sess_options if self._sess_options else C.get_default_session_options()
@@ -487,7 +491,7 @@ class IOBinding:
     def bind_input(self, name, device_type, device_id, element_type, shape, buffer_ptr):
         """
         :param name: input name
-        :param device_type: e.g. cpu, cuda
+        :param device_type: e.g. cpu, cuda, cann
         :param device_id: device id, e.g. 0
         :param element_type: input element type
         :param shape: input shape
@@ -526,7 +530,7 @@ class IOBinding:
     ):
         """
         :param name: output name
-        :param device_type: e.g. cpu, cuda, cpu by default
+        :param device_type: e.g. cpu, cuda, cann, cpu by default
         :param device_id: device id, e.g. 0
         :param element_type: output element type
         :param shape: output shape
@@ -613,7 +617,7 @@ class OrtValue:
         else:
             # An end user won't hit this error
             raise ValueError(
-                "`Provided ortvalue` needs to be of type " + "`onnxruntime.capi.onnxruntime_pybind11_state.OrtValue`"
+                "`Provided ortvalue` needs to be of type `onnxruntime.capi.onnxruntime_pybind11_state.OrtValue`"
             )
 
     def _get_c_value(self):
@@ -626,7 +630,7 @@ class OrtValue:
         A copy of the data in the Numpy object is held by the OrtValue only if the device is NOT cpu
 
         :param numpy_obj: The Numpy object to construct the OrtValue from
-        :param device_type: e.g. cpu, cuda, cpu by default
+        :param device_type: e.g. cpu, cuda, cann, cpu by default
         :param device_id: device id, e.g. 0
         """
         # Hold a reference to the numpy object (if device_type is 'cpu') as the OrtValue
@@ -651,7 +655,7 @@ class OrtValue:
 
         :param shape: List of integers indicating the shape of the OrtValue
         :param element_type: The data type of the elements in the OrtValue (numpy type)
-        :param device_type: e.g. cpu, cuda, cpu by default
+        :param device_type: e.g. cpu, cuda, cann, cpu by default
         :param device_id: device id, e.g. 0
         """
         if shape is None or element_type is None:
@@ -691,7 +695,7 @@ class OrtValue:
 
     def device_name(self):
         """
-        Returns the name of the device where the OrtValue's data buffer resides e.g. cpu, cuda
+        Returns the name of the device where the OrtValue's data buffer resides e.g. cpu, cuda, cann
         """
         return self._ortvalue.device_name().lower()
 
@@ -771,7 +775,7 @@ class OrtDevice:
             self._ort_device = c_ort_device
         else:
             raise ValueError(
-                "`Provided object` needs to be of type " + "`onnxruntime.capi.onnxruntime_pybind11_state.OrtDevice`"
+                "`Provided object` needs to be of type `onnxruntime.capi.onnxruntime_pybind11_state.OrtDevice`"
             )
 
     def _get_c_device(self):
@@ -814,7 +818,7 @@ class SparseTensor:
         else:
             # An end user won't hit this error
             raise ValueError(
-                "`Provided object` needs to be of type " + "`onnxruntime.capi.onnxruntime_pybind11_state.SparseTensor`"
+                "`Provided object` needs to be of type `onnxruntime.capi.onnxruntime_pybind11_state.SparseTensor`"
             )
 
     def _get_c_tensor(self):

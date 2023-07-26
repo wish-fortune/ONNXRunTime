@@ -197,7 +197,8 @@ Memory_LeakCheck::~Memory_LeakCheck() {
 
     std::string string;
     char buffer[1024];
-    _snprintf_s(buffer, _TRUNCATE, "%IX bytes at location 0x%08IX\n", entry.cbData - sizeof(MemoryBlock), UINT_PTR(pBlock));
+    _snprintf_s(buffer, _TRUNCATE, "%Iu bytes at location 0x%08IX\n", entry.cbData - sizeof(MemoryBlock),
+                UINT_PTR(pBlock));
     string.append(buffer);
     for (auto& p : block.m_pTraces) {
       if (!p) break;
@@ -225,7 +226,7 @@ Memory_LeakCheck::~Memory_LeakCheck() {
         string.find("testing::internal::Mutex::ThreadSafeLazyInit") == std::string::npos &&
         string.find("testing::internal::ThreadLocalRegistryImpl::GetThreadLocalsMapLocked") == std::string::npos &&
         string.find("testing::internal::ThreadLocalRegistryImpl::GetValueOnCurrentThread") == std::string::npos &&
-        string.find("PyInit_onnxruntime_pybind11_state") == std::string::npos){
+        string.find("PyInit_onnxruntime_pybind11_state") == std::string::npos) {
       if (leaked_bytes == 0)
         DebugPrint("\n-----Starting Heap Trace-----\n\n");
 

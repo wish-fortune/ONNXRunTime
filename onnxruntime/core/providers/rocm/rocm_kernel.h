@@ -29,8 +29,7 @@ class RocmKernel : public OpKernel {
     if (is_backward_pass) {
       BackwardPassGuard guard;
       s = ComputeInternal(p_op_kernel_context);
-    }
-    else {
+    } else {
       s = ComputeInternal(p_op_kernel_context);
     }
     // use this to precisely locate the node where ROCM failure comes from
@@ -51,7 +50,8 @@ class RocmKernel : public OpKernel {
 
   template <typename T>
   inline IAllocatorUniquePtr<T> GetScratchBuffer(size_t count_or_bytes, onnxruntime::Stream* stream) const {
-    return provider_->GetScratchBuffer<T>(count_or_bytes, stream, WaitRocmNotificationOnDevice);
+    if (count_or_bytes == 0) return nullptr;
+    return IAllocator::MakeUniquePtr<T>(Info().GetAllocator(OrtMemType::OrtMemTypeDefault), count_or_bytes, false, stream, WaitRocmNotificationOnDevice);
   }
 
   // Different from GetScratchBuffer which use IAllocator::Alloc() to allocate memory,
@@ -60,12 +60,14 @@ class RocmKernel : public OpKernel {
   // logic (or similar for different allocator) that may be housed in the Alloc() implementation.
   template <typename T>
   inline IAllocatorUniquePtr<T> GetTransientScratchBuffer(size_t count_or_bytes) const {
-    return provider_->GetTransientScratchBuffer<T>(count_or_bytes);
+    if (count_or_bytes == 0) return nullptr;
+    return IAllocator::MakeUniquePtr<T>(Info().GetAllocator(OrtMemType::OrtMemTypeDefault), count_or_bytes, true);
   }
 
   template <typename T>
   inline IAllocatorUniquePtr<T> AllocateBufferOnCPUPinned(size_t count_or_bytes) const {
-    return provider_->AllocateBufferOnCPUPinned<T>(count_or_bytes);
+    if (count_or_bytes == 0) return nullptr;
+    return IAllocator::MakeUniquePtr<T>(Info().GetAllocator(OrtMemType::OrtMemTypeCPU), count_or_bytes);
   }
 
   inline void AddDeferredReleaseCPUPtr(void* p, onnxruntime::Stream* ort_stream) const {

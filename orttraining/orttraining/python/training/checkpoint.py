@@ -16,7 +16,7 @@ from . import _checkpoint_storage, _utils
 
 def experimental_state_dict(ort_trainer, include_optimizer_state=True):
     warnings.warn(
-        "experimental_state_dict() will be deprecated soon. " "Please use ORTTrainer.state_dict() instead.",
+        "experimental_state_dict() will be deprecated soon. Please use ORTTrainer.state_dict() instead.",
         DeprecationWarning,
     )
 
@@ -46,7 +46,7 @@ def experimental_state_dict(ort_trainer, include_optimizer_state=True):
 
 def experimental_load_state_dict(ort_trainer, state_dict, strict=False):
     warnings.warn(
-        "experimental_load_state_dict() will be deprecated soon. " "Please use ORTTrainer.load_state_dict() instead.",
+        "experimental_load_state_dict() will be deprecated soon. Please use ORTTrainer.load_state_dict() instead.",
         DeprecationWarning,
     )
 
@@ -87,7 +87,7 @@ def experimental_save_checkpoint(
     include_optimizer_state=True,
 ):
     warnings.warn(
-        "experimental_save_checkpoint() will be deprecated soon. " "Please use ORTTrainer.save_checkpoint() instead.",
+        "experimental_save_checkpoint() will be deprecated soon. Please use ORTTrainer.save_checkpoint() instead.",
         DeprecationWarning,
     )
 
@@ -113,7 +113,7 @@ def experimental_save_checkpoint(
 
 def experimental_load_checkpoint(ort_trainer, checkpoint_dir, checkpoint_prefix="ORT_checkpoint", strict=False):
     warnings.warn(
-        "experimental_load_checkpoint() will be deprecated soon. " "Please use ORTTrainer.load_checkpoint() instead.",
+        "experimental_load_checkpoint() will be deprecated soon. Please use ORTTrainer.load_checkpoint() instead.",
         DeprecationWarning,
     )
 
@@ -665,10 +665,10 @@ class _CombineZeroCheckpoint:
         self.clean_state_dict = clean_state_dict
         self.world_size = int(self.checkpoint_files[0].split("ZeRO")[1].split(".")[2]) + 1
         assert len(self.checkpoint_files) == self.world_size, f"Could not find {self.world_size} files"
-        self.weight_shape_map = dict()
+        self.weight_shape_map = {}
         self.sharded_params = set()
 
-    def _split_name(self, name):
+    def _split_name(self, name: str):
         name_split = name.split("_view_")
         view_num = None
         if len(name_split) > 1:
@@ -684,7 +684,7 @@ class _CombineZeroCheckpoint:
         elif name_split[0].endswith("_fp16"):
             mp_suffix = "_fp16"
         param_name = name_split[0]
-        if optimizer_key != "":
+        if optimizer_key:
             param_name = param_name.split(optimizer_key)[1]
         param_name = param_name.split("_fp16")[0]
         return param_name, optimizer_key, view_num, mp_suffix

@@ -39,7 +39,7 @@ def _adapt_filters_for_extended_minimal_build(
     # graph transformations in an extended minimal build require certain ops to be available
     extended_minimal_build_required_op_ids = set()  # set of (domain, optype, opset)
     with open(
-        ORT_ROOT / "onnxruntime/core/optimizer/transpose_optimizer/layout_transformation_potentially_added_ops.h",
+        ORT_ROOT / "onnxruntime/core/optimizer/layout_transformation/layout_transformation_potentially_added_ops.h",
     ) as f:
         region_boundary_pattern = re.compile(r"@@region_(begin|end)\(extended_minimal_build_required_kernels\)@@")
         op_id_pattern = re.compile(
@@ -330,7 +330,7 @@ if __name__ == "__main__":
         "--cmake_build_dir",
         type=str,
         required=True,
-        help="Path to the build directory. " "The op reduction files will be generated under the build directory.",
+        help="Path to the build directory. The op reduction files will be generated under the build directory.",
     )
 
     parser.add_argument(

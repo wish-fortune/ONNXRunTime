@@ -25,7 +25,7 @@ class ActivationOpBuilder : public BaseOpBuilder {
 
  private:
   [[nodiscard]] Status AddToModelBuilderImpl(ModelBuilder& model_builder, const Node& node,
-                               const logging::Logger& logger) const override;
+                                             const logging::Logger& logger) const override;
 #endif
 
   // Operator support related
@@ -75,7 +75,7 @@ Status AddPReluWeight(ModelBuilder& model_builder, const Node& node,
 
     auto& weight_values = *prelu.mutable_alpha()->mutable_floatvalue();
     weight_values.Clear();
-    weight_values.Resize(num_channels, value);
+    weight_values.Resize(narrow<int>(num_channels), value);
   }
   return Status::OK();
 }
@@ -100,7 +100,7 @@ Status ActivationOpBuilder::AddToModelBuilderImpl(ModelBuilder& model_builder,
     NodeAttrHelper helper(node);
     const auto alpha = helper.Get("alpha", 0.01f);
 
-    auto *leaky_relu = layer->mutable_activation()->mutable_leakyrelu();
+    auto* leaky_relu = layer->mutable_activation()->mutable_leakyrelu();
     leaky_relu->set_alpha(alpha);
   } else {
     return ORT_MAKE_STATUS(ONNXRUNTIME, INVALID_ARGUMENT,

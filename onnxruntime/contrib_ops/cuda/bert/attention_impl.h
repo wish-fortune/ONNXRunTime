@@ -63,6 +63,8 @@ struct AttentionData {
 
   bool has_qkv_workspace;
   T* workspace;
+  T* temp_k_workspace;
+  T* temp_v_workspace;
 
   T* output;
   T* present;
@@ -178,6 +180,12 @@ Status LaunchConcatPastToPresent(cudaStream_t stream,
                                  const half* past,
                                  const half* k_v,
                                  half* present);
+
+template <typename T>
+Status LaunchStridedCopy(cudaStream_t stream,
+                         const T* in, int4 in_shape, longlong4 in_strides,  // coord (b,n,s,h)
+                         T* out, longlong4 out_strides,                     // coord (b,n,s,h)
+                         int max_threads_per_block);
 }  // namespace cuda
 }  // namespace contrib
 }  // namespace onnxruntime

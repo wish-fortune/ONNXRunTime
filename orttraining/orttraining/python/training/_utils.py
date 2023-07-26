@@ -107,7 +107,7 @@ def dtype_torch_to_numpy(torch_dtype):
     elif torch_dtype == torch.bool:
         return np.bool_
     else:
-        raise ValueError(f"torch_dtype ({str(torch_dtype)}) type is not supported by Numpy")
+        raise ValueError(f"torch_dtype ({torch_dtype!s}) type is not supported by Numpy")
 
 
 def dtype_onnx_to_torch(onnx_type):
@@ -134,6 +134,10 @@ def dtype_onnx_to_torch(onnx_type):
         "COMPLEX64",
         "COMPLEX128",
         "BFLOAT16",
+        "FLOAT8E4M3FN",
+        "FLOAT8E4M3FNUZ",
+        "FLOAT8E5M2",
+        "FLOAT8E5M2FNUZ",
     ]
 
     if isinstance(onnx_type, int):
@@ -213,12 +217,11 @@ def import_module_from_file(file_path, module_name=None):
 
     if not isinstance(file_path, str) or not os.path.exists(file_path):
         raise AssertionError(
-            "'file_path' must be a full path string with the python file to load. " "file_path={!r}.".format(file_path)
+            f"'file_path' must be a full path string with the python file to load. file_path={file_path!r}."
         )
     if module_name is not None and (not isinstance(module_name, str) or not module_name):
         raise AssertionError(
-            "'module_name' must be a string with the python module name to load. "
-            "module_name={!r}.".format(module_name)
+            "'module_name' must be a string with the python module name to load. module_name={module_name!r}."
         )
 
     if not module_name:

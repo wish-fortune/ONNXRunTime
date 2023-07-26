@@ -3,7 +3,6 @@
 
 #include "core/providers/coreml/coreml_execution_provider.h"
 
-#include "core/framework/allocatormgr.h"
 #include "core/framework/compute_capability.h"
 #include "core/graph/graph_viewer.h"
 #include "core/providers/partitioning_utils.h"
@@ -23,20 +22,6 @@ constexpr const char* COREML = "CoreML";
 CoreMLExecutionProvider::CoreMLExecutionProvider(uint32_t coreml_flags)
     : IExecutionProvider{onnxruntime::kCoreMLExecutionProvider, true},
       coreml_flags_(coreml_flags) {
-  AllocatorCreationInfo device_info(
-      [](int) {
-        return std::make_unique<CPUAllocator>(OrtMemoryInfo(COREML, OrtAllocatorType::OrtDeviceAllocator));
-      });
-
-  InsertAllocator(CreateAllocator(device_info));
-
-  AllocatorCreationInfo cpu_memory_info(
-      [](int) {
-        return std::make_unique<CPUAllocator>(
-            OrtMemoryInfo(COREML, OrtAllocatorType::OrtDeviceAllocator, OrtDevice(), 0, OrtMemTypeCPUOutput));
-      });
-
-  InsertAllocator(CreateAllocator(cpu_memory_info));
 }
 
 CoreMLExecutionProvider::~CoreMLExecutionProvider() {}
@@ -236,7 +221,7 @@ common::Status CoreMLExecutionProvider::Compile(const std::vector<FusedNodeAndGr
 }
 #else
 common::Status CoreMLExecutionProvider::Compile(const std::vector<FusedNodeAndGraph>& fused_nodes_and_graphs,
-                                               std::vector<NodeComputeInfo>& node_compute_funcs) {
+                                                std::vector<NodeComputeInfo>& node_compute_funcs) {
   for (const auto& fused_node_and_graph : fused_nodes_and_graphs) {
     ORT_UNUSED_PARAMETER(fused_node_and_graph);
     NodeComputeInfo compute_info;
@@ -250,6 +235,6 @@ common::Status CoreMLExecutionProvider::Compile(const std::vector<FusedNodeAndGr
   }
   return Status::OK();
 }
-#endif //__APPLE__
+#endif  //__APPLE__
 
 }  // namespace onnxruntime

@@ -31,8 +31,8 @@ class FusionOptions:
         # (1) Attention has merged weights for Q/K/V projection, which might be faster in some cases since 3 MatMul is
         #     merged into one.
         # (2) Attention could only handle self attention; MultiHeadAttention could handle both self and cross attention.
-        # (3) MultiHeadAttention has only cuda implementation right now.
         self.use_multi_head_attention = False
+        self.disable_multi_head_attention_bias = False
 
         self.enable_skip_layer_norm = True
         self.enable_embed_layer_norm = True
@@ -43,6 +43,7 @@ class FusionOptions:
 
         self.enable_shape_inference = True
         self.enable_gemm_fast_gelu = False
+        self.group_norm_channels_last = True
 
         # Set default to sequence length for BERT model to use fused attention to speed up.
         # Note that embed layer normalization will convert 2D mask to 1D when mask type is MaskIndexEnd.
@@ -103,6 +104,8 @@ class FusionOptions:
             options.disable_attention_mask()
 
         if args.model_type in ["unet", "vae", "clip"]:
+            if args.use_group_norm_channels_first:
+                options.group_norm_channels_last = False
             if args.disable_nhwc_conv:
                 options.enable_nhwc_conv = False
             if args.disable_group_norm:
@@ -229,8 +232,7 @@ class FusionOptions:
             required=False,
             action="store_true",
             help="Use MultiHeadAttention instead of Attention operator for testing purpose. "
-            "Note that MultiHeadAttention might be slower than Attention since MatMul of input projection is excluded. "
-            "MultiHeadAttention has only CUDA implementation so the model can only run with cuda execution provider.",
+            "Note that MultiHeadAttention might be slower than Attention when qkv are not packed. ",
         )
         parser.set_defaults(use_multi_head_attention=False)
 
@@ -281,3 +283,11 @@ class FusionOptions:
             help="Do not use NhwcConv. Only works for model_type=unet or vae",
         )
         parser.set_defaults(disable_nhwc_conv=False)
+
+        parser.add_argument(
+            "--use_group_norm_channels_first",
+            required=False,
+            action="store_true",
+            help="Use channels_first (NCHW) instead of channels_last (NHWC) for GroupNorm. Only works for model_type=unet or vae",
+        )
+        parser.set_defaults(use_group_norm_channels_first=False)

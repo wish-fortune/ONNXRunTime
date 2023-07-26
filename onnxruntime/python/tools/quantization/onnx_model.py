@@ -176,7 +176,7 @@ class ONNXModel:
         for output in node.output:
             if output in input_name_to_nodes:
                 for node in input_name_to_nodes[output]:
-                    children.append(node)
+                    children.append(node)  # noqa: PERF402
         return children
 
     def get_parents(self, node, output_name_to_node=None):
@@ -294,7 +294,7 @@ class ONNXModel:
                                 "Transpose",
                                 inputs=[node.input[1]],
                                 outputs=[inputB],
-                                name=node.name + "_Transpose" if node.name != "" else "",
+                                name=node.name + "_Transpose" if node.name else "",
                             )
                             new_nodes.append(transpose_node)
 
@@ -302,7 +302,7 @@ class ONNXModel:
                         "MatMul",
                         inputs=[node.input[0], inputB],
                         outputs=[node.output[0] + ("_MatMul" if len(node.input) > 2 else "")],
-                        name=node.name + "_MatMul" if node.name != "" else "",
+                        name=node.name + "_MatMul" if node.name else "",
                     )
                     new_nodes.append(matmul_node)
 
@@ -311,7 +311,7 @@ class ONNXModel:
                             "Add",
                             inputs=[node.output[0] + "_MatMul", node.input[2]],
                             outputs=node.output,
-                            name=node.name + "_Add" if node.name != "" else "",
+                            name=node.name + "_Add" if node.name else "",
                         )
                         new_nodes.append(add_node)
 
@@ -414,6 +414,8 @@ class ONNXModel:
                 continue
 
             for input_name in node.input:
+                if not input_name:
+                    continue
                 if input_name not in deps_to_nodes:
                     deps_to_nodes[input_name] = [node_idx]
                 else:
