@@ -177,6 +177,7 @@ function(setup_mlas_source_for_windows)
       ${MLAS_SRC_DIR}/amd64/SpoolKernelSse2.asm
       ${MLAS_SRC_DIR}/amd64/SpoolKernelAvx.asm
       ${MLAS_SRC_DIR}/amd64/SpoolKernelAvx512F.asm
+      ${MLAS_SRC_DIR}/amd64/SymQgemmU8KernelAvx512.asm
       ${MLAS_SRC_DIR}/amd64/sgemma.asm
       ${MLAS_SRC_DIR}/amd64/cvtfp16a.asm
       ${MLAS_SRC_DIR}/amd64/SoftmaxKernelAvx.asm
@@ -510,6 +511,7 @@ else()
           ${MLAS_SRC_DIR}/x86_64/QgemvU8S8KernelAvx512Vnni.S
           ${MLAS_SRC_DIR}/x86_64/QgemmU8X8KernelAvx512Core.S
           ${MLAS_SRC_DIR}/x86_64/ConvSymKernelAvx512Core.S
+          ${MLAS_SRC_DIR}/x86_64/SymQgemmU8KernelAvx512.S
         )
         set_source_files_properties(${mlas_platform_srcs_avx512core} PROPERTIES COMPILE_FLAGS "-mavx512bw -mavx512dq -mavx512vl")
 

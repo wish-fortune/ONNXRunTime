@@ -839,8 +839,8 @@ extern const MLAS_GEMM_QUANT_DISPATCH MlasGemm8X8DispatchPOWER10;
 struct MLAS_SYMM_QGEMM_DISPATCH;
 extern const MLAS_SYMM_QGEMM_DISPATCH MlasSymmQgemmS8DispatchNeon;
 extern const MLAS_SYMM_QGEMM_DISPATCH MlasSymmQgemmS8DispatchSdot;
-
-//
+extern const MLAS_SYMM_QGEMM_DISPATCH MlasSymmQgemmU8DispatchAVX512Vnni;
+    //
 // Symmetric quantized integer convolution dispatch structure.
 //
 
@@ -929,7 +929,10 @@ struct MLAS_PLATFORM {
     const MLAS_GEMM_QUANT_DISPATCH* GemmU8S8Dispatch;
     const MLAS_GEMM_QUANT_DISPATCH* GemmS8S8Dispatch;
 #endif
-    const MLAS_SYMM_QGEMM_DISPATCH* SymmQgemmDispatch{nullptr};
+
+    // Symmetric quantized GEMM, right hand side is always S8
+    const MLAS_SYMM_QGEMM_DISPATCH* SymmQgemmS8Dispatch{nullptr};
+    const MLAS_SYMM_QGEMM_DISPATCH* SymmQgemmU8Dispatch{nullptr};
 
     const MLAS_CONV_SYM_DISPATCH* ConvSymU8S8Dispatch{nullptr};
     const MLAS_CONV_SYM_DISPATCH* ConvSymS8S8Dispatch{nullptr};

@@ -646,6 +646,8 @@ struct MLAS_SYMM_QGEMM_DATA_PARAMS {
     const void* B = 0;
     void* C = nullptr;
     size_t ldc = 0;
+    int32_t ZeroPointA = -1;
+    const MLAS_QGEMM_OUTPUT_PROCESSOR* OutputProcessor = nullptr;
     // TODO!! add re-quantization parameters
 };
 
@@ -902,7 +904,7 @@ MlasConvDepthwiseGetKernelOutputCnt()
 }
 
 int32_t
-MlasSymmQgemmGetKernelOutputCnt();
+MlasSymmQgemmGetKernelOutputCnt(bool AIsSigned);
 
 int32_t
 MlasQgemmGetKernelOutputCnt(
