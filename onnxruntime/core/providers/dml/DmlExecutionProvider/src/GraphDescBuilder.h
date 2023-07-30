@@ -21,26 +21,18 @@ namespace Dml
 
     namespace GraphDescBuilder
     {
+        const uint32_t minNodeCountToReuseCommandList = 5;
+
         // Gets a unique name for the node which survives recreation and graph manipulations between the point
         // that graph partitioning occurs and kernel creation happens
         const std::string& GetUniqueNodeName(const onnxruntime::Node& node);
 
-        struct NodeInfo
+        struct GraphDesc : DmlSerializedGraphDesc
         {
-            Microsoft::WRL::ComPtr<IDMLOperator> op;
-            std::string name;
-        };
-
-        struct GraphDesc
-        {
-            std::vector<NodeInfo> nodes;
-            std::vector<DML_INPUT_GRAPH_EDGE_DESC> inputEdges;
-            std::vector<DML_OUTPUT_GRAPH_EDGE_DESC> outputEdges;
-            std::vector<DML_INTERMEDIATE_GRAPH_EDGE_DESC> intermediateEdges;
             bool reuseCommandList;
         };
 
-        GraphDesc BuildGraphDesc(
+        GraphDesc BuildDmlGraphDesc(
             const uint8_t* isConstGpuGraphInput,
             const size_t isConstGpuGraphInputCount,
             const std::unordered_map<std::string, std::pair<const ONNX_NAMESPACE::TensorProto*, bool>>& isInitializerTransferable,
@@ -48,6 +40,7 @@ namespace Dml
             const onnxruntime::IndexedSubGraph& indexedSubGraph,
             const std::unordered_map<std::string, GraphNodeProperties>& graphNodePropertyMap,
             IDMLDevice* device,
-            const void* executionHandle);
+            const void* executionHandle,
+            std::unordered_map<uint32_t, uint32_t>& constantEdgeIdxToSubgraphInputArgIdxMap);
     }
 }
