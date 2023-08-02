@@ -337,7 +337,7 @@ __global__ void cuApplyLayerNorm(
     const V* __restrict__ gamma,
     const V* __restrict__ beta,
     const T* __restrict__ skip,
-    const T* __restrict__ bias,
+    const V* __restrict__ bias,
     T* __restrict__ skip_input_bias_add_output) {
   // Assumptions:
   // 1) blockDim.x == GPU_WARP_SIZE
@@ -358,13 +358,13 @@ __global__ void cuApplyLayerNorm(
     for (int i = thrx; i < n2; i += numx) {
       U curr = static_cast<U>(lvals[i]);
 
+
+
       if (bias != NULL) {
         curr += static_cast<U>(bias[i]);
       }
 
-      if (skip_vals != NULL) {
-        curr += static_cast<U>(skip_vals[i]);
-      }
+      curr += static_cast<U>(skip_vals[i]);
 
       U gamma_i = (gamma != NULL) ? (U)gamma[i] : (U)1;
       U beta_i = (beta != NULL) ? (U)beta[i] : (U)0;
@@ -410,7 +410,7 @@ void HostApplyLayerNorm(
     const V* gamma,
     const V* beta,
     const T* skip,
-    const T* bias,
+    const V* bias,
     T* skip_input_bias_add_output) {
   const int maxGridY = prop.maxGridSize[1];
   const int warp_size = prop.warpSize;
@@ -448,9 +448,13 @@ void HostApplyLayerNorm(
 
 #define LAYERNORM_LINEAR_IMPL(T, U, V, simplified)                                                                    \
   template void HostApplyLayerNorm<T, U, V, simplified>(const cudaDeviceProp& prop, cudaStream_t stream, V* output,   \
-                                                        U* mean, U* inv_std_dev, const T* input, int n1, int n2,      \
+                                                        U* mean, U* inv_std_dev, const V* input, int n1, int n2,      \
                                                         double epsilon, const V* gamma, const V* beta, const T* skip, \
-                                                        const T* bias, T* skip_input_bias_add_output);
+                                                        const V* bias, T* skip_input_bias_add_output);
+  template void HostApplyLayerNorm<float, float, half, true>(const cudaDeviceProp& prop, cudaStream_t stream, half* output,
+                                                        float* mean, float* inv_std_dev, const float* input, int n1, int n2,
+                                                        double epsilon, const half* gamma, const half* beta, const float* skip,
+                                                        const half* bias, float* skip_input_bias_add_output);
 
 LAYERNORM_LINEAR_IMPL(float, float, float, true)
 LAYERNORM_LINEAR_IMPL(half, float, half, true)
