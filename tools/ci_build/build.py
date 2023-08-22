@@ -687,6 +687,9 @@ def parse_arguments():
     parser.add_argument("--use_triton_kernel", action="store_true", help="Use triton compiled kernels")
     parser.add_argument("--use_lock_free_queue", action="store_true", help="Use lock-free task queue for threadpool.")
 
+    parser.add_argument("--print_error_values", action="store_true", help="Insert nodes that will print potentially wrong values like NaN and INF.")
+    parser.add_argument("--print_tolerance_errors", action="store_true", help="Insert nodes that will print values that exceed a tolerance threshold between float16 and float32.")
+
     if not is_windows():
         parser.add_argument(
             "--allow_running_as_root",
@@ -995,6 +998,8 @@ def generate_build_tree(
         "-Donnxruntime_USE_CANN=" + ("ON" if args.use_cann else "OFF"),
         "-Donnxruntime_USE_TRITON_KERNEL=" + ("ON" if args.use_triton_kernel else "OFF"),
         "-Donnxruntime_DISABLE_FLOAT8_TYPES=" + ("ON" if disable_float8_types else "OFF"),
+        "-Donnxruntime_PRINT_ERROR_VALUES=" + ("ON" if args.print_error_values else "OFF"),
+        "-Donnxruntime_PRINT_TOLERANCE_ERRORS=" + ("ON" if args.print_tolerance_errors else "OFF"),
     ]
 
     # By default on Windows we currently support only cross compiling for ARM/ARM64
