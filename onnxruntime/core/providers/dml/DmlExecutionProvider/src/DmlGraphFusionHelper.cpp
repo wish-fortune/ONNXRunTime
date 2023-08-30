@@ -1,6 +1,9 @@
 #pragma once
 
 #include "DmlGraphFusionHelper.h"
+#include "DmlBufferRegion.h"
+#include "DmlTaggedPointer.h"
+#include "DmlAllocationInfo.h"
 
 
 namespace Dml
@@ -88,19 +91,23 @@ namespace DmlGraphFusionHelper
         return buffer;
     }
 
-    void UnwrapTensor(
+    D3D12BufferRegion UnwrapTensor(
         Windows::AI::MachineLearning::Adapter::IWinmlExecutionProvider* winmlProvider,
         const onnxruntime::Tensor* tensor,
-        ID3D12Resource** resource,
         uint64_t* allocId)
     {
-        IUnknown* allocationUnk = static_cast<IUnknown*>(const_cast<void*>(tensor->DataRaw()));
-        Microsoft::WRL::ComPtr<IUnknown> resourceUnk;
-        winmlProvider->GetABIDataInterface(false, allocationUnk, &resourceUnk);
+        void* opaqueData = const_cast<void*>(tensor->DataRaw());
 
-        *allocId = winmlProvider->TryGetPooledAllocationId(allocationUnk, 0);
+        if (tensor->Location().device.MemType() == OrtDevice::MemType::DML_EXTERNAL)
+        {
+            // The allocation is not pooled
+            auto allocInfo = static_cast<AllocationInfo*>(opaqueData);
+            *allocId = 0;
+            return D3D12BufferRegion(0, allocInfo->GetD3D12Resource()->GetDesc().Width, allocInfo->GetD3D12Resource());
+        }
 
-        ORT_THROW_IF_FAILED(resourceUnk->QueryInterface(resource));
+        *allocId = winmlProvider->GetUniqueId(opaqueData);
+        return winmlProvider->GetBufferRegion(opaqueData, tensor->SizeInBytes());
     }
 
     void ProcessInputData(

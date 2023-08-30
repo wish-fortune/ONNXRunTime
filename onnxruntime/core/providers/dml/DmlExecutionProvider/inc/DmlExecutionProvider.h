@@ -7,6 +7,7 @@ interface IMLOperatorRegistry;
 #include "core/common/status.h"
 #include "core/framework/data_transfer.h"
 #include "IWinmlExecutionProvider.h"
+#include "core/providers/dml/DmlExecutionProvider/src/DmlBufferRegion.h"
 
 namespace onnxruntime
 {
@@ -17,20 +18,14 @@ namespace onnxruntime
     class KernelRegistry;
 }
 
-enum class AllocatorRoundingMode
-{
-    Disabled = 0,
-    Enabled = 1,
-};
-
 namespace Dml
 {
     std::unique_ptr<onnxruntime::IExecutionProvider> CreateExecutionProvider(
         IDMLDevice* dmlDevice,
         ID3D12CommandQueue* commandQueue,
-        bool enableMetacommands = true);
+        bool enableMetacommands,
+        bool enableBfcAllocator);
 
-    ID3D12Resource* GetD3D12ResourceFromAllocation(onnxruntime::IAllocator* allocator, void* ptr);
     void FlushContext(onnxruntime::IExecutionProvider* provider);
     void ReleaseCompletedReferences(onnxruntime::IExecutionProvider* provider);
 

@@ -5,6 +5,9 @@
 
 #include "GraphTransformer.h"
 #include "core/providers/dml/DmlExecutionProvider/inc/IWinmlExecutionProvider.h"
+#include "DmlBufferRegion.h"
+#include "DmlBuffer.h"
+#include "DmlAllocatorRoundingMode.h"
 
 #include <wrl/client.h>
 #include <wrl/implements.h>
@@ -16,6 +19,11 @@ using Base = Microsoft::WRL::RuntimeClass<
     TInterfaces...>;
 }
 
+namespace onnxruntime
+{
+    class BFCArena;
+}
+
 namespace Dml
 {
     using Microsoft::WRL::ComPtr;
@@ -23,8 +31,11 @@ namespace Dml
     class ReadbackHeap;
     class ExecutionContext;
     class BucketizedBufferAllocator;
-    class CPUAllocator;
+    class DmlCpuAllocator;
     class ExecutionProvider;
+    class DmlGpuAllocator;
+    class DmlExternalGpuAllocator;
+    struct TaggedPointer;
 
     class ExecutionProviderImpl : public WRL::Base<Dml::IExecutionProvider,
                                   Windows::AI::MachineLearning::Adapter::IWinmlExecutionProvider>
@@ -34,9 +45,11 @@ namespace Dml
             IDMLDevice* dmlDevice,
             ID3D12Device* d3d12Device,
             ID3D12CommandQueue* queue,
-            bool enableMetacommands = true);
+            bool enableMetacommands,
+            bool enableBfcAllocator);
 
         void ReleaseCompletedReferences();
+        uint64_t GetUniqueId(void* opaquePointer);
 
     public: // implements Dml::IExecutionProvider
         STDMETHOD(GetD3DDevice)(_COM_Outptr_ ID3D12Device** d3dDevice) const noexcept final;
@@ -95,19 +108,7 @@ namespace Dml
         // IWinmlExecutionProvider methods
         void QueueReference(IUnknown* object) override;
 
-        void GetShadowCopyIfRequired(
-            bool isInternalOperator,
-            IUnknown* data,
-            IUnknown** dataCopy) const override;
-
-        void GetABIDataInterface(
-            bool isInternalOperator,
-            IUnknown* data,
-            IUnknown** abiData) const override;
-
-       uint64_t TryGetPooledAllocationId(
-            IUnknown* data,
-            bool isInternalOperator) override;
+        D3D12BufferRegion GetBufferRegion(void* opaquePointer, uint64_t size) const override;
 
         void GetABIExecutionInterfaceAndInvalidateState(
             bool isInternalOperator,
@@ -132,15 +133,8 @@ namespace Dml
 
         void WaitForOutstandingWork();
 
-        // Allocate a resource from pools.  Releasing pooledResource returns it to the pool.
-        STDMETHOD(AllocatePooledResource)(
-            size_t size,
-            AllocatorRoundingMode roundingMode,
-            ID3D12Resource **d3dResource,
-            IUnknown* *pooledResource
-        ) const noexcept final;
-
-        STDMETHOD_(ID3D12Resource*, DecodeResource)(void* allocation) const noexcept final;
+        // Allocate a resource from pools.  Releasing the returned buffer returns it to the pool.
+        DmlBuffer ExecutionProviderImpl::AllocatePooledResource(size_t size, AllocatorRoundingMode roundingMode) const;
 
         std::shared_ptr<onnxruntime::KernelRegistry> GetKernelRegistry() const
         {
@@ -178,24 +172,30 @@ namespace Dml
             uint32_t supportedDeviceDataTypeMask // Each bit corresponds to each DML_TENSOR_DATA_TYPE.
         ) const;
 
+        D3D12BufferRegion GetBufferForTensor(IMLOperatorTensor* tensor) const;
         void FlushUploadsIfReady() const;
 
         ComPtr<ID3D12Device> m_d3d12Device;
         ComPtr<IDMLDevice> m_dmlDevice;
         bool m_isMcdmDevice = false;
         bool m_areMetacommandsEnabled = true;
+        bool m_bfcAllocatorEnabled = true;
         bool m_native16BitShaderOpsSupported = false;
         std::shared_ptr<ExecutionContext> m_context;
         std::unique_ptr<PooledUploadHeap> m_uploadHeap;
         std::unique_ptr<ReadbackHeap> m_readbackHeap;
-        std::shared_ptr<BucketizedBufferAllocator> m_allocator;
-        std::shared_ptr<CPUAllocator> m_cpuInputAllocator;
+        std::shared_ptr<onnxruntime::BFCArena> m_bfcAllocator;
+        std::shared_ptr<BucketizedBufferAllocator> m_bucketizedAllocator;
+        std::shared_ptr<DmlGpuAllocator> m_gpuAllocator;
+        std::shared_ptr<DmlExternalGpuAllocator> m_externalGpuAllocator;
+        std::shared_ptr<DmlCpuAllocator> m_cpuInputAllocator;
         std::shared_ptr<onnxruntime::KernelRegistry> m_kernelRegistry;
         std::shared_ptr<const Windows::AI::MachineLearning::Adapter::InternalRegistrationInfoMap> m_internalRegInfoMap;
         mutable uint64_t m_partitionKernelPrefixVal = 0;
         bool m_closed = false;
         mutable std::chrono::time_point<std::chrono::steady_clock> m_lastUploadFlushTime;
         static constexpr std::chrono::milliseconds m_batchFlushInterval = std::chrono::milliseconds(10);
+        ComPtr<ID3D12CommandQueue> m_queue;
     };
 
     class DataTransfer : public onnxruntime::IDataTransfer
@@ -236,8 +236,8 @@ namespace Dml
         explicit ExecutionProvider(
             IDMLDevice* dmlDevice,
             ID3D12CommandQueue* commandQueue,
-            bool enableMetacommands = true
-        );
+            bool enableMetacommands,
+            bool enableBfcAllocator);
 
         std::unique_ptr<onnxruntime::IDataTransfer> GetDataTransfer() const final override
         {
@@ -307,6 +307,16 @@ namespace Dml
         virtual std::vector<onnxruntime::AllocatorPtr> CreatePreferredAllocators() override
         {
             return m_impl->CreatePreferredAllocators();
+        }
+
+        virtual OrtDevice GetExternalOrtDeviceByMemType(OrtMemType mem_type) const final
+        {
+            if (mem_type == OrtMemType::OrtMemTypeDefault)
+            {
+                return OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DML_EXTERNAL, 0);
+            }
+
+            return GetOrtDeviceByMemType(mem_type);
         }
 
     private:

@@ -26,7 +26,7 @@
 #include "core/framework/provider_options_utils.h"
 
 #ifdef USE_DML
-#include "core/providers/dml/DmlExecutionProvider/src/DmlExternalBufferAllocator.h"
+#include "core/providers/dml/DmlExecutionProvider/src/DmlExternalGpuAllocator.h"
 #endif
 
 namespace onnxruntime {
@@ -196,7 +196,7 @@ AllocatorPtr GetDmlAllocator(OrtDevice::DeviceId id) {
 
   auto hit = id_to_allocator_map->find(id);
   if (hit == id_to_allocator_map->end()) {
-    auto dml_allocator = std::make_shared<Dml::DmlExternalBufferAllocator>(id);
+    auto dml_allocator = std::make_shared<Dml::DmlExternalGpuAllocator>(id);
     hit = id_to_allocator_map->emplace(id, std::move(dml_allocator)).first;
   }
 

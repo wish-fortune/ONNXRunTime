@@ -6,6 +6,8 @@
 #include "MLOperatorAuthorImpl.h"
 #include "FusedGraphKernel.h"
 #include "DmlGraphFusionHelper.h"
+#include "DmlManagedBuffer.h"
+#include "DmlAllocatorRoundingMode.h"
 
 using namespace Windows::AI::MachineLearning::Adapter;
 
@@ -63,13 +65,11 @@ namespace Dml
             UINT64 persistentResourceSize = m_compiledExecutionPlanOperator->GetBindingProperties().PersistentResourceSize;
             if (persistentResourceSize > 0)
             {
-                ORT_THROW_IF_FAILED(m_provider->AllocatePooledResource(
-                    static_cast<size_t>(persistentResourceSize),
-                    AllocatorRoundingMode::Disabled,
-                    m_persistentResource.GetAddressOf(),
-                    m_persistentResourceAllocatorUnk.GetAddressOf()));
-
-                m_persistentResourceBinding = DML_BUFFER_BINDING { m_persistentResource.Get(), 0, persistentResourceSize };
+                auto buffer = m_provider->AllocatePooledResource(persistentResourceSize, AllocatorRoundingMode::Disabled);
+                m_persistentResource = buffer.GetD3D12Resource();
+                m_persistentResourceBinding = buffer.GetBufferBinding();
+                m_managedPersistentBuffer = wil::MakeOrThrow<DmlManagedBuffer>(std::move(buffer));
+                m_winmlProvider->QueueReference(m_managedPersistentBuffer.Get());
             }
 
             ORT_THROW_IF_FAILED(m_provider->InitializeOperator(
@@ -79,7 +79,6 @@ namespace Dml
 
             // Queue references to objects which must be kept alive until resulting GPU work completes
             m_winmlProvider->QueueReference(m_compiledExecutionPlanOperator.Get());
-            m_winmlProvider->QueueReference(m_persistentResourceAllocatorUnk.Get());
 
             std::for_each(
                 initializeResourceRefs.begin(),
@@ -112,7 +111,7 @@ namespace Dml
                 // Get input resources for execution, excluding those which were specified as owned by DML and provided
                 // at initialization instead.
                 std::vector<ComPtr<IMLOperatorTensor>> inputTensors(kernelContext->InputCount());
-                std::vector<ID3D12Resource*> inputPtrs(kernelContext->InputCount());
+                std::vector<D3D12BufferRegion> inputBufferRegions(kernelContext->InputCount());
 
                 for (int i = 0; i < kernelContext->InputCount(); ++i)
                 {
@@ -123,12 +122,16 @@ namespace Dml
 
                     if (m_nonOwnedGraphInputsFromInitializers[i])
                     {
-                        inputPtrs[i] = m_nonOwnedGraphInputsFromInitializers[i].Get();
+                        inputBufferRegions[i] = D3D12BufferRegion(
+                            0,
+                            m_nonOwnedGraphInputsFromInitializers[i]->GetDesc().Width,
+                            m_nonOwnedGraphInputsFromInitializers[i].Get());
                     }
                     else if (!m_isInputsUploadedByDmlEP[i])
                     {
                         ORT_THROW_IF_FAILED(contextWrapper.GetInputTensor(i, inputTensors[i].GetAddressOf()));
-                        inputPtrs[i] = m_provider->DecodeResource(MLOperatorTensor(inputTensors[i].Get()).GetDataInterface().Get());
+                        auto tensorWrapper = static_cast<TensorWrapper*>(inputTensors[i].Get());
+                        inputBufferRegions[i] = tensorWrapper->GetBufferRegion();
                     }
                 }
 
@@ -136,14 +139,14 @@ namespace Dml
                 ExecuteOperator(
                     m_compiledExecutionPlanOperator.Get(),
                     m_persistentResourceBinding ? &*m_persistentResourceBinding : nullptr,
-                    inputPtrs,
+                    inputBufferRegions,
                     aux);
 
                 ORT_THROW_IF_FAILED(m_provider->AddUAVBarrier());
 
                 // Queue references to objects which must be kept alive until resulting GPU work completes
                 m_winmlProvider->QueueReference(m_compiledExecutionPlanOperator.Get());
-                m_winmlProvider->QueueReference(m_persistentResourceAllocatorUnk.Get());
+                m_winmlProvider->QueueReference(m_managedPersistentBuffer.Get());
             }
             else
             {
@@ -156,7 +159,7 @@ namespace Dml
         void ExecuteOperator(
             IDMLCompiledOperator* op,
             _In_opt_ const DML_BUFFER_BINDING* persistentResourceBinding,
-            gsl::span<ID3D12Resource*> inputTensors,
+            gsl::span<D3D12BufferRegion> inputBufferRegions,
             gsl::span<IMLOperatorTensor*> outputTensors) const
         {
             auto FillBindingsFromTensors = [this](auto& bufferBindings, auto& bindingDescs,  gsl::span<IMLOperatorTensor*>& tensors)
@@ -165,10 +168,10 @@ namespace Dml
                 {
                     if (tensor)
                     {
+                        auto tensorWrapper = static_cast<TensorWrapper*>(tensor);
+
                         assert(tensor->IsDataInterface());
-                        ID3D12Resource* resource = m_provider->DecodeResource(MLOperatorTensor(tensor).GetDataInterface().Get());
-                        D3D12_RESOURCE_DESC resourceDesc = resource->GetDesc();
-                        bufferBindings.push_back({ resource, 0, resourceDesc.Width });
+                        bufferBindings.push_back(tensorWrapper->GetBufferRegion().GetBufferBinding());
                         bindingDescs.push_back({ DML_BINDING_TYPE_BUFFER, &bufferBindings.back() });
                     }
                     else
@@ -179,29 +182,28 @@ namespace Dml
                 }
             };
 
-            auto FillBindingsFromBuffers = [](auto& bufferBindings, auto& bindingDescs,  gsl::span<ID3D12Resource*>& resources)
+            auto FillBindingsFromBufferRegions = [](auto& bufferBindings, auto& bindingDescs,  gsl::span<D3D12BufferRegion>& bufferRegions)
             {
-                for (ID3D12Resource* resource : resources)
+                for (const D3D12BufferRegion& bufferRegion : bufferRegions)
                 {
-                    if (resource)
+                    bufferBindings.push_back(bufferRegion.GetBufferBinding());
+
+                    if (bufferRegion.GetD3D12Resource() != nullptr)
                     {
-                        D3D12_RESOURCE_DESC resourceDesc = resource->GetDesc();
-                        bufferBindings.push_back({ resource, 0, resourceDesc.Width });
                         bindingDescs.push_back({ DML_BINDING_TYPE_BUFFER, &bufferBindings.back() });
                     }
                     else
                     {
-                        bufferBindings.push_back({ nullptr, 0, 0 });
                         bindingDescs.push_back({ DML_BINDING_TYPE_NONE, nullptr });
                     }
                 }
             };
 
             std::vector<DML_BUFFER_BINDING> inputBufferBindings;
-            inputBufferBindings.reserve(inputTensors.size());
+            inputBufferBindings.reserve(inputBufferRegions.size());
             std::vector<DML_BINDING_DESC> inputBindings;
-            inputBindings.reserve(inputTensors.size());
-            FillBindingsFromBuffers(inputBufferBindings, inputBindings, inputTensors);
+            inputBindings.reserve(inputBufferRegions.size());
+            FillBindingsFromBufferRegions(inputBufferBindings, inputBindings, inputBufferRegions);
 
             std::vector<DML_BUFFER_BINDING> outputBufferBindings;
             outputBufferBindings.reserve(outputTensors.size());
@@ -306,10 +308,10 @@ namespace Dml
                         const onnxruntime::Tensor* tensor = kernelContext->Input<onnxruntime::Tensor>(gsl::narrow_cast<int>(i));
 
                         uint64_t allocId;
-                        DmlGraphFusionHelper::UnwrapTensor(m_winmlProvider.Get(), tensor, &inputBindings[i].Buffer, &allocId);
+                        auto bufferRegion = DmlGraphFusionHelper::UnwrapTensor(m_winmlProvider.Get(), tensor, &allocId);
+
+                        inputBindings[i] = bufferRegion.GetBufferBinding();
                         inputBindingsChanged = inputBindingsChanged || (!allocId || m_inputBindingAllocIds[i] != allocId);
-                        inputBindings[i].Buffer->Release(); // Avoid holding an additional reference
-                        inputBindings[i].SizeInBytes = DmlGraphFusionHelper::AlignToPow2<size_t>(tensor->SizeInBytes(), 4);
                         inputBindingDescs[i] = {DML_BINDING_TYPE_BUFFER, &inputBindings[i]};
                         m_inputBindingAllocIds[i] = allocId;
                     }
@@ -343,10 +345,9 @@ namespace Dml
                     );
 
                 uint64_t allocId;
-                DmlGraphFusionHelper::UnwrapTensor(m_winmlProvider.Get(), tensor, &outputBindings[i].Buffer, &allocId);
+                auto bufferRegion = DmlGraphFusionHelper::UnwrapTensor(m_winmlProvider.Get(), tensor, &allocId);
+                outputBindings[i] = bufferRegion.GetBufferBinding();
                 outputBindingsChanged = outputBindingsChanged || (!allocId || m_outputBindingAllocIds[i] != allocId);
-                outputBindings[i].Buffer->Release(); // Avoid holding an additional reference
-                outputBindings[i].SizeInBytes = DmlGraphFusionHelper::AlignToPow2<size_t>(tensor->SizeInBytes(), 4);
                 outputBindingDescs[i] = {DML_BINDING_TYPE_BUFFER, &outputBindings[i]};
                 m_outputBindingAllocIds[i] = allocId;
             }
@@ -358,27 +359,10 @@ namespace Dml
 
             if (execBindingProps.TemporaryResourceSize > 0)
             {
-                // Allocate temporary data which will automatically be freed when the GPU work
-                // which is scheduled up to the point that this method returns has completed.
-                ComPtr<IUnknown> tempAlloc;
-                uint64_t tempAllocId = 0;
-                ORT_THROW_IF_FAILED(contextWrapper.AllocateTemporaryData(static_cast<size_t>(execBindingProps.TemporaryResourceSize), tempAlloc.GetAddressOf(), &tempAllocId));
-
-                ComPtr<IUnknown> tempResourceUnk;
-                m_winmlProvider->GetABIDataInterface(false, tempAlloc.Get(), &tempResourceUnk);
-
-                // Bind the temporary resource.
-                ComPtr<ID3D12Resource> tempResource;
-                ORT_THROW_IF_FAILED(tempResourceUnk->QueryInterface(tempResource.GetAddressOf()));
-                DML_BUFFER_BINDING tempBufferBinding = {tempResource.Get(), 0, execBindingProps.TemporaryResourceSize};
+                auto buffer = m_provider->AllocatePooledResource(execBindingProps.TemporaryResourceSize, AllocatorRoundingMode::Enabled);
+                DML_BUFFER_BINDING tempBufferBinding = buffer.GetBufferBinding();
                 DML_BINDING_DESC tempBindingDesc = { DML_BINDING_TYPE_BUFFER, &tempBufferBinding };
-
-                if (!tempAllocId || m_tempBindingAllocId != tempAllocId)
-                {
-                    m_bindingTable->BindTemporaryResource(&tempBindingDesc);
-                }
-
-                m_tempBindingAllocId = tempAllocId;
+                m_bindingTable->BindTemporaryResource(&tempBindingDesc);
             }
 
             // Execute the command list and if it succeeds, update the fence value at which this command may be
@@ -402,7 +386,7 @@ namespace Dml
             m_winmlProvider->QueueReference(WRAP_GRAPHICS_UNKNOWN(m_graphicsCommandList).Get());
             m_winmlProvider->QueueReference(WRAP_GRAPHICS_UNKNOWN(m_heap).Get());
             m_winmlProvider->QueueReference(m_bindingTable.Get());
-            m_winmlProvider->QueueReference(m_persistentResourceAllocatorUnk.Get());
+            m_winmlProvider->QueueReference(m_managedPersistentBuffer.Get());
         }
 
         ComPtr<IDMLCompiledOperator> m_compiledExecutionPlanOperator;
@@ -419,12 +403,11 @@ namespace Dml
         ComPtr<IDMLBindingTable> m_bindingTable;
         std::optional<DML_BUFFER_BINDING> m_persistentResourceBinding;
         ComPtr<ID3D12Resource> m_persistentResource;
-        ComPtr<IUnknown> m_persistentResourceAllocatorUnk; // Controls when the persistent resource is returned to the allocator
+        ComPtr<DmlManagedBuffer> m_managedPersistentBuffer;
 
         // Bindings from previous executions of a re-used command list
         mutable std::vector<uint64_t> m_inputBindingAllocIds;
         mutable std::vector<uint64_t> m_outputBindingAllocIds;
-        mutable uint64_t m_tempBindingAllocId = 0;
 
         // Fence tracking the status of the command list's last execution, and whether its descriptor heap
         // can safely be updated.

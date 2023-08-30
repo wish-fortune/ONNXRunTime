@@ -8,7 +8,9 @@
 #include "PooledUploadHeap.h"
 #include "ReadbackHeap.h"
 #include "ExecutionContext.h"
+#include "DmlReservedResourceSubAllocator.h"
 #include "BucketizedBufferAllocator.h"
+#include "DmlCpuAllocator.h"
 #include "MLOperatorAuthorImpl.h"
 #include "core/providers/dml/OperatorAuthorHelper/MLOperatorAuthorHelper.h"
 #include "core/providers/dml/OperatorAuthorHelper/OperatorHelper.h"
@@ -17,8 +19,15 @@
 #include "core/graph/indexed_sub_graph.h"
 #include "core/framework/compute_capability.h"
 #include "core/framework/fallback_cpu_capability.h"
-#include "DmlCommittedResourceAllocator.h"
+#include "core/framework/bfc_arena.h"
 #include "DmlCommittedResourceWrapper.h"
+#include "DmlBufferRegion.h"
+#include "DmlReservedResourceAllocatorWrapper.h"
+#include "DmlGpuAllocator.h"
+#include "DmlBuffer.h"
+#include "DmlTaggedPointer.h"
+#include "DmlExternalGpuAllocator.h"
+#include "DmlAllocatorRoundingMode.h"
 
 #ifdef ERROR
 #undef ERROR
@@ -67,7 +76,8 @@ namespace Dml
     ExecutionProvider::ExecutionProvider(
         IDMLDevice* dmlDevice,
         ID3D12CommandQueue* commandQueue,
-        bool enableMetacommands) :
+        bool enableMetacommands,
+        bool enableBfcAllocator) :
             IExecutionProvider(onnxruntime::kDmlExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, 0))
     {
         D3D12_COMMAND_LIST_TYPE queueType = commandQueue->GetDesc().Type;
@@ -80,7 +90,7 @@ namespace Dml
         ComPtr<ID3D12Device> device;
         GRAPHICS_THROW_IF_FAILED(commandQueue->GetDevice(IID_GRAPHICS_PPV_ARGS(device.GetAddressOf())));
 
-        m_impl = wil::MakeOrThrow<ExecutionProviderImpl>(dmlDevice, device.Get(), commandQueue, enableMetacommands);
+        m_impl = wil::MakeOrThrow<ExecutionProviderImpl>(dmlDevice, device.Get(), commandQueue, enableMetacommands, enableBfcAllocator);
     }
 
     std::vector<std::unique_ptr<onnxruntime::ComputeCapability>>
@@ -106,39 +116,15 @@ namespace Dml
         m_context->GetCurrentCompletionEvent().WaitForSignal();
     }
 
-    HRESULT __stdcall ExecutionProviderImpl::AllocatePooledResource(
-        size_t size,
-        AllocatorRoundingMode roundingMode,
-        ID3D12Resource **d3dResource,
-        IUnknown** pooledResource
-    ) const noexcept
+    DmlBuffer ExecutionProviderImpl::AllocatePooledResource(size_t size, AllocatorRoundingMode roundingMode) const
     {
-        ORT_TRY
-        {
-        ComPtr<IUnknown> allocation;
-        allocation.Attach(static_cast<IUnknown* >(m_allocator->Alloc(size, roundingMode)));
-
-        const auto* allocInfo = m_allocator->DecodeDataHandle(allocation.Get());
-
-        ComPtr<ID3D12Resource> resource = allocInfo->GetResource();
-        resource.CopyTo(d3dResource);
-        *pooledResource = allocation.Detach();
-        return S_OK;
-        }
-        ORT_CATCH_RETURN
+        return m_gpuAllocator->AllocateDefaultBuffer(size, roundingMode);
     }
 
-    ID3D12Resource* __stdcall ExecutionProviderImpl::DecodeResource(void* allocation) const noexcept
+    D3D12BufferRegion ExecutionProviderImpl::GetBufferForTensor(IMLOperatorTensor* tensor) const
     {
-        ORT_TRY
-        {
-            const AllocationInfo* allocInfo = m_allocator->DecodeDataHandle(allocation);
-            return allocInfo->GetResource();
-        }
-        ORT_CATCH_GENERIC
-        {
-            return nullptr;
-        }
+        auto tensorWrapper = static_cast<TensorWrapper*>(tensor);
+        return tensorWrapper->GetBufferRegion();
     }
 
 // ORT release pipelines agent pools do not have 19H1 SDK installed which defines D3D_FEATURE_LEVEL_1_0_CORE.
@@ -147,10 +133,17 @@ namespace Dml
 // Task 24384515: Update ORT AIInfra release agent pool to install 19H1 SDK on VM bootstrap
 #define D3D_FEATURE_LEVEL_1_0_CORE_PRIVATE ((D3D_FEATURE_LEVEL)0x1000)
 
-    ExecutionProviderImpl::ExecutionProviderImpl(IDMLDevice* dmlDevice, ID3D12Device* d3d12Device, ID3D12CommandQueue* queue, bool enableMetacommands)
+    ExecutionProviderImpl::ExecutionProviderImpl(
+        IDMLDevice* dmlDevice,
+        ID3D12Device* d3d12Device,
+        ID3D12CommandQueue* queue,
+        bool enableMetacommands,
+        bool enableBfcAllocator)
         : m_d3d12Device(d3d12Device),
           m_dmlDevice(dmlDevice),
-          m_areMetacommandsEnabled(enableMetacommands)
+          m_areMetacommandsEnabled(enableMetacommands),
+          m_bfcAllocatorEnabled(enableBfcAllocator),
+          m_queue(queue)
     {
 
         D3D12_FEATURE_DATA_FEATURE_LEVELS featureLevels = {};
@@ -192,24 +185,55 @@ namespace Dml
         m_lastUploadFlushTime = std::chrono::steady_clock::now();
     }
 
+    static std::shared_ptr<onnxruntime::BFCArena> CreateBfcAllocator(std::shared_ptr<DmlReservedResourceSubAllocator> subAllocator)
+    {
+        auto bfcArena = std::make_unique<onnxruntime::BFCArena>(
+            std::make_unique<DmlReservedResourceAllocatorWrapper>(subAllocator),
+            onnxruntime::BFCArena::DEFAULT_MAX_MEM,
+            onnxruntime::ArenaExtendStrategy::kSameAsRequested,
+            onnxruntime::BFCArena::DEFAULT_INITIAL_CHUNK_SIZE_BYTES,
+            onnxruntime::BFCArena::DEFAULT_MAX_DEAD_BYTES_PER_CHUNK,
+            onnxruntime::BFCArena::DEFAULT_INITIAL_GROWTH_CHUNK_SIZE_BYTES,
+            onnxruntime::BFCArena::DEFAULT_MAX_POWER_OF_TWO_EXTEND_BYTES);
+
+        return bfcArena;
+    }
+
     std::vector<onnxruntime::AllocatorPtr> ExecutionProviderImpl::CreatePreferredAllocators() {
-        if (!m_allocator)
+        if (!m_gpuAllocator)
         {
-            // Create an allocator for D3D12 buffers used to hold tensor data. The returned buffers from the allocator
-            // should be DEFAULT heap buffers which can be used as UAVs, and which start in UAV state.
-            m_allocator = std::make_shared<BucketizedBufferAllocator>(m_d3d12Device.Get(),
-                m_context,  // TODO(leca): REVIEW: Will it cause memory issue when m_context is released in EP while alloc is released in sessionState?
+            auto subAllocator = std::make_shared<DmlReservedResourceSubAllocator>(
+                m_d3d12Device.Get(),
+                m_context,
+                m_queue.Get(),
                 CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
-                D3D12_HEAP_FLAG_NONE,
+                D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS,
                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                std::make_unique<DmlCommittedResourceAllocator>(m_d3d12Device.Get()));
-            m_context->SetAllocator(m_allocator);
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+            m_bfcAllocator = CreateBfcAllocator(subAllocator);
+
+            m_bucketizedAllocator = std::make_shared<BucketizedBufferAllocator>(
+                m_d3d12Device.Get(),
+                m_context, // TODO(leca): REVIEW: Will it cause memory issue when m_context is released in EP while alloc is released in sessionState?
+                CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+                D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS,
+                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+            // Wrap the BFC allocator into our own allocator
+            m_gpuAllocator = std::make_shared<DmlGpuAllocator>(
+                m_bfcAllocator.get(),
+                m_bucketizedAllocator.get(),
+                subAllocator,
+                m_bfcAllocatorEnabled ? ActiveAllocator::BfcAllocator : ActiveAllocator::BucketizedBufferAllocator);
+            m_context->SetAllocator(m_gpuAllocator);
             // CPU Allocator used to create buffers for the MemcpyFromHost, Shape and Size operators.
-            m_cpuInputAllocator = std::make_shared<CPUAllocator>(OrtMemType::OrtMemTypeCPUInput);
+            m_cpuInputAllocator = std::make_shared<DmlCpuAllocator>(OrtMemType::OrtMemTypeCPUInput);
+            m_externalGpuAllocator = std::make_shared<DmlExternalGpuAllocator>(m_d3d12Device.Get());
         }
 
-        return std::vector<onnxruntime::AllocatorPtr>{m_allocator, m_cpuInputAllocator,};
+        return std::vector<onnxruntime::AllocatorPtr>{m_gpuAllocator, m_externalGpuAllocator, m_cpuInputAllocator};
     }
 
     HRESULT __stdcall ExecutionProviderImpl::GetD3DDevice(_COM_Outptr_ ID3D12Device** d3dDevice) const noexcept
@@ -348,10 +372,8 @@ namespace Dml
                 if (tensor)
                 {
                     assert(tensor->IsDataInterface());
-                    const AllocationInfo* allocInfo = m_allocator->DecodeDataHandle(MLOperatorTensor(tensor).GetDataInterface().Get());
-                    ID3D12Resource* resource = allocInfo->GetResource();
-                    D3D12_RESOURCE_DESC resourceDesc = resource->GetDesc();
-                    bufferBindings.push_back({ resource, 0, resourceDesc.Width });
+                    auto bufferRegion = GetBufferForTensor(tensor);
+                    bufferBindings.push_back(bufferRegion.GetBufferBinding());
                     bindingDescs.push_back({ DML_BINDING_TYPE_BUFFER, &bufferBindings.back() });
                 }
                 else
@@ -438,15 +460,11 @@ namespace Dml
             //
             // CPU -> GPU copy (upload)
             //
-            const AllocationInfo* dstAllocInfo = m_allocator->DecodeDataHandle(MLOperatorTensor(dst).GetDataInterface().Get());
-
-            ID3D12Resource* dstData = dstAllocInfo->GetResource();
-            const void* srcData = src->GetData();
-
-            constexpr uint64_t dstOffset = 0;
-            const auto dstState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS; // GPU resources are always kept in UAV state
-
-            m_uploadHeap->BeginUploadToGpu(dstData, dstOffset, dstState, AsByteSpan(srcData, dataSizeInBytes));
+            auto dstBufferRegion = GetBufferForTensor(dst);
+            ID3D12Resource* dstData = dstBufferRegion.GetD3D12Resource();
+            const auto dstState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            const uint64_t dstOffset = dstBufferRegion.Offset();
+            m_uploadHeap->BeginUploadToGpu(dstData, dstOffset, dstState, AsByteSpan(src->GetData(), dataSizeInBytes));
             FlushUploadsIfReady();
         }
         else if (!src->IsCpuData() && dst->IsCpuData())
@@ -454,29 +472,28 @@ namespace Dml
             //
             // GPU -> CPU copy (readback)
             //
-
-            void* dstData = dst->GetData();
-            const AllocationInfo* srcAllocInfo = m_allocator->DecodeDataHandle(MLOperatorTensor(src).GetDataInterface().Get());
-
-            ID3D12Resource* srcData = srcAllocInfo->GetResource();
-
-            const uint64_t srcOffset = 0;
-            const auto srcState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS; // GPU resources are always kept in UAV state
-
-            // Performs a blocking call to synchronize and read back data from the GPU into the destination buffer
-            m_readbackHeap->ReadbackFromGpu(AsByteSpan(dstData, dataSizeInBytes), srcData, srcOffset, srcState);
+            auto srcBufferRegion = GetBufferForTensor(src);
+            ID3D12Resource* srcData = srcBufferRegion.GetD3D12Resource();
+            const auto srcState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            const uint64_t srcOffset = srcBufferRegion.Offset();
+            m_readbackHeap->ReadbackFromGpu(AsByteSpan(dst->GetData(), dataSizeInBytes), srcData, srcOffset, srcState);
         }
         else if (!src->IsCpuData() && !dst->IsCpuData())
         {
             //
             // GPU -> GPU copy
             //
-            const AllocationInfo* srcAllocInfo = m_allocator->DecodeDataHandle(MLOperatorTensor(src).GetDataInterface().Get());
-            const AllocationInfo* dstAllocInfo = m_allocator->DecodeDataHandle(MLOperatorTensor(dst).GetDataInterface().Get());
+            auto srcBufferRegion = GetBufferForTensor(src);
+            ID3D12Resource* srcData = srcBufferRegion.GetD3D12Resource();
+            const auto srcState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            const uint64_t srcOffset = srcBufferRegion.Offset();
 
-            ID3D12Resource* srcData = srcAllocInfo->GetResource();
-            ID3D12Resource* dstData = dstAllocInfo->GetResource();
-            m_context->CopyBufferRegion(dstData, 0, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, srcData, 0, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, dataSizeInBytes);
+            auto dstBufferRegion = GetBufferForTensor(dst);
+            ID3D12Resource* dstData = dstBufferRegion.GetD3D12Resource();
+            const auto dstState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            const uint64_t dstOffset = dstBufferRegion.Offset();
+
+            m_context->CopyBufferRegion(dstData, dstOffset, dstState, srcData, srcOffset, srcState, dataSizeInBytes);
         }
         else
         {
@@ -496,7 +513,7 @@ namespace Dml
         ORT_THROW_HR_IF(E_INVALIDARG, dst.size() != src.size());
 
         // Source and destination for batched GPU -> CPU copies
-        std::vector<ID3D12Resource*> srcDatas;
+        std::vector<D3D12BufferRegion> srcBufferRegions;
         std::vector<void*> dstDatas;
         std::vector<uint32_t> dataSizesInBytes;
 
@@ -525,15 +542,12 @@ namespace Dml
             ORT_THROW_HR_IF(E_INVALIDARG, dataSizesInBytes.back() != ComputeByteSizeFromTensor(*src[i])); // Tensors must be the same size
 
             dstDatas.push_back(dst[i]->GetData());
-            const AllocationInfo* srcAllocInfo = m_allocator->DecodeDataHandle(MLOperatorTensor(src[i]).GetDataInterface().Get());
-
-            srcDatas.push_back(srcAllocInfo->GetResource());
+            srcBufferRegions.push_back(GetBufferForTensor(src[i]));
         }
 
-        const auto srcState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS; // GPU resources are always kept in UAV state
-
         // Performs a blocking call to synchronize and read back data from the GPU into the destination buffer
-        m_readbackHeap->ReadbackFromGpu(dstDatas, dataSizesInBytes, srcDatas, srcState);
+        const auto srcState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        m_readbackHeap->ReadbackFromGpu(dstDatas, dataSizesInBytes, srcBufferRegions, srcState);
 
         return S_OK;
         }
@@ -550,9 +564,8 @@ namespace Dml
         auto mlTensor = MLOperatorTensor(dst).GetDataInterface();
         if (mlTensor != nullptr)
         {
-            const AllocationInfo* dstAllocInfo = m_allocator->DecodeDataHandle(mlTensor.Get());
-            ID3D12Resource* dstData = dstAllocInfo->GetResource();
-            m_context->FillBufferWithPattern(dstData, rawValue);
+            auto dstBufferRegion = GetBufferForTensor(dst);
+            m_context->FillBufferWithPattern(dstBufferRegion.GetD3D12Resource(), dstBufferRegion.Offset(), rawValue);
         }
 
         return S_OK;
@@ -901,9 +914,14 @@ namespace Dml
     Status ExecutionProviderImpl::CopyTensors(const std::vector<onnxruntime::IDataTransfer::SrcDstPair>& src_dst_pairs) const
     {
         // Source and destination for batched GPU -> CPU copies
-        std::vector<ID3D12Resource*> srcDatas;
+        std::vector<D3D12BufferRegion> srcBufferRegions;
+        srcBufferRegions.reserve(src_dst_pairs.size());
+
         std::vector<void*> dstDatas;
+        dstDatas.reserve(src_dst_pairs.size());
+
         std::vector<uint32_t> dataSizesInBytes;
+        dataSizesInBytes.reserve(src_dst_pairs.size());
 
         assert(!m_closed);
         auto provider = const_cast<ExecutionProviderImpl*>(this);
@@ -942,16 +960,12 @@ namespace Dml
             ORT_THROW_HR_IF(E_INVALIDARG, dataSizesInBytes[i] != ComputeByteSizeFromTensor(srcWrapper)); // Tensors must be the same size
 
             dstDatas.push_back(dstWrapper.GetData());
-            const AllocationInfo* srcAllocInfo = m_allocator->DecodeDataHandle(MLOperatorTensor(&srcWrapper).GetDataInterface().Get());
-
-            srcDatas.push_back(srcAllocInfo->GetResource());
+            srcBufferRegions.push_back(GetBufferForTensor(&srcWrapper));
         }
 
-        const uint64_t srcOffset = 0;
-        const auto srcState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS; // GPU resources are always kept in UAV state
-
         // Performs a blocking call to synchronize and read back data from the GPU into the destination buffer
-        m_readbackHeap->ReadbackFromGpu(dstDatas, dataSizesInBytes, srcDatas, srcState);
+        const auto srcState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        m_readbackHeap->ReadbackFromGpu(dstDatas, dataSizesInBytes, srcBufferRegions, srcState);
 
         return onnxruntime::common::Status::OK();
     }
@@ -973,47 +987,14 @@ namespace Dml
         m_context->QueueReference(object);
     }
 
-    void ExecutionProviderImpl::GetShadowCopyIfRequired(
-        bool isInternalOperator,
-        IUnknown* data,
-        IUnknown** dataCopy) const
+    D3D12BufferRegion ExecutionProviderImpl::GetBufferRegion(void* opaquePointer, uint64_t size) const
     {
-        assert(!m_closed);
-
-        *dataCopy = data;
-        data->AddRef();
+        return m_gpuAllocator->CreateBufferRegion(opaquePointer, size);
     }
 
-    void ExecutionProviderImpl::GetABIDataInterface(
-        bool isInternalOperator,
-        IUnknown* data,
-        IUnknown** abiData) const
+    uint64_t ExecutionProviderImpl::GetUniqueId(void* opaquePointer)
     {
-        assert(!m_closed);
-
-        if (isInternalOperator)
-        {
-            *abiData = data;
-            data->AddRef();
-        }
-        else
-        {
-#ifdef _GAMING_XBOX
-            ComPtr<GraphicsUnknownWrapper> wrappedResource = Microsoft::WRL::Make<GraphicsUnknownWrapper>(m_allocator->DecodeDataHandle(data)->GetResource());
-            *abiData = wrappedResource.Detach();
-#else
-            ComPtr<ID3D12Resource> resource = m_allocator->DecodeDataHandle(data)->GetResource();
-            *abiData = resource.Detach();
-#endif
-        }
-    }
-
-    uint64_t ExecutionProviderImpl::TryGetPooledAllocationId(
-        IUnknown* data,
-        bool isInternalOperator)
-    {
-        assert(!isInternalOperator);
-        return m_allocator->DecodeDataHandle(data)->GetPooledResourceId();
+        return m_gpuAllocator->GetUniqueId(opaquePointer);
     }
 
     void ExecutionProviderImpl::GetABIExecutionInterfaceAndInvalidateState(
@@ -1101,7 +1082,7 @@ namespace Dml
 
     std::shared_ptr<onnxruntime::IAllocator> ExecutionProviderImpl::GetGpuAllocator()
     {
-        return m_allocator;
+        return m_gpuAllocator;
     }
 
     std::shared_ptr<onnxruntime::IAllocator> ExecutionProviderImpl::GetCpuInputAllocator()
@@ -1121,7 +1102,7 @@ namespace Dml
 
         // Allocations after this point are potentially transient and their sizes are
         // rounded to enable pooling.
-        m_allocator->SetDefaultRoundingMode(AllocatorRoundingMode::Enabled);
+        m_gpuAllocator->SetDefaultRoundingMode(AllocatorRoundingMode::Enabled);
 
         return onnxruntime::common::Status::OK();
     }
@@ -1129,15 +1110,10 @@ namespace Dml
     std::unique_ptr<onnxruntime::IExecutionProvider> CreateExecutionProvider(
         IDMLDevice* dmlDevice,
         ID3D12CommandQueue* commandQueue,
-        bool enableMetacommands)
+        bool enableMetacommands,
+        bool enableBfcAllocator)
     {
-        return std::make_unique<Dml::ExecutionProvider>(dmlDevice, commandQueue, enableMetacommands);
-    }
-
-    ID3D12Resource* GetD3D12ResourceFromAllocation(onnxruntime::IAllocator* allocator, void* ptr)
-    {
-        Dml::BucketizedBufferAllocator* pAllocationInfo = static_cast<Dml::BucketizedBufferAllocator*>(allocator);
-        return pAllocationInfo->DecodeDataHandle(ptr)->GetResource();
+        return std::make_unique<Dml::ExecutionProvider>(dmlDevice, commandQueue, enableMetacommands, enableBfcAllocator);
     }
 
     void FlushContext(onnxruntime::IExecutionProvider* provider)
@@ -1164,12 +1140,10 @@ namespace Dml
 
     void* CreateGPUAllocationFromD3DResource(ID3D12Resource* pResource)
     {
-        uint64_t pooledResourceId = 0; // Not a pooled resource
-
         ComPtr<DmlResourceWrapper> resourceWrapper;
         wil::MakeOrThrow<DmlCommittedResourceWrapper>(pResource).As(&resourceWrapper);
 
-        ComPtr<AllocationInfo> allocInfo = wil::MakeOrThrow<AllocationInfo>(nullptr, 0, pooledResourceId, resourceWrapper.Get(), (size_t)pResource->GetDesc().Width);
+        ComPtr<AllocationInfo> allocInfo = wil::MakeOrThrow<AllocationInfo>(nullptr, 0, 0, resourceWrapper.Get(), (size_t)pResource->GetDesc().Width);
         return allocInfo.Detach();
     }
     void FreeGPUAllocation(void* ptr)

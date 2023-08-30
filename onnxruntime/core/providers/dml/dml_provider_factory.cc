@@ -20,6 +20,8 @@ using Microsoft::WRL::ComPtr;
 #include "core/framework/error_code_helper.h"
 #include "DmlExecutionProvider/src/ErrorHandling.h"
 #include "DmlExecutionProvider/src/GraphicsUnknownHelper.h"
+#include "DmlExecutionProvider/src/DmlAllocationInfo.h"
+#include "DmlExecutionProvider/src/DmlTaggedPointer.h"
 #include "DmlExecutionProvider/inc/DmlExecutionProvider.h"
 #include "core/platform/env.h"
 
@@ -32,22 +34,27 @@ struct DMLProviderFactory : IExecutionProviderFactory {
   ~DMLProviderFactory() override {}
 
   std::unique_ptr<IExecutionProvider> CreateProvider() override;
-
   void SetMetacommandsEnabled(bool metacommands_enabled);
+  void SetBfcAllocatorEnabled(bool bfc_allocator_enabled);
 
  private:
   ComPtr<IDMLDevice> dml_device_{};
   ComPtr<ID3D12CommandQueue> cmd_queue_{};
   bool metacommands_enabled_ = true;
+  bool bfc_allocator_enabled_ = true;
 };
 
 std::unique_ptr<IExecutionProvider> DMLProviderFactory::CreateProvider() {
-  auto provider = Dml::CreateExecutionProvider(dml_device_.Get(), cmd_queue_.Get(), metacommands_enabled_);
+  auto provider = Dml::CreateExecutionProvider(dml_device_.Get(), cmd_queue_.Get(), metacommands_enabled_, bfc_allocator_enabled_);
   return provider;
 }
 
 void DMLProviderFactory::SetMetacommandsEnabled(bool metacommands_enabled) {
   metacommands_enabled_ = metacommands_enabled;
+}
+
+void DMLProviderFactory::SetBfcAllocatorEnabled(bool bfc_allocator_enabled) {
+  bfc_allocator_enabled_ = bfc_allocator_enabled;
 }
 
 std::shared_ptr<IExecutionProviderFactory> CreateExecutionProviderFactory_DML(IDMLDevice* dml_device,
@@ -78,6 +85,10 @@ void DmlConfigureProviderFactoryMetacommandsEnabled(IExecutionProviderFactory* f
   dml_provider_factory->SetMetacommandsEnabled(metacommandsEnabled);
 }
 
+void DmlConfigureProviderFactoryBfcAllocatorEnabled(IExecutionProviderFactory* factory, bool bfc_allocator_enabled) {
+  auto dml_provider_factory = static_cast<DMLProviderFactory*>(factory);
+  dml_provider_factory->SetBfcAllocatorEnabled(bfc_allocator_enabled);
+}
 
 bool IsSoftwareAdapter(IDXGIAdapter1* adapter) {
     DXGI_ADAPTER_DESC1 desc;
@@ -212,8 +223,15 @@ ORT_API_STATUS_IMPL(GetD3D12ResourceFromAllocation, _In_ OrtAllocator* ort_alloc
   if (!allocator) {
     return OrtApis::CreateStatus(ORT_INVALID_ARGUMENT, "No requested allocator available");
   }
-  *d3d_resource = Dml::GetD3D12ResourceFromAllocation(allocator.get(), allocation);
+
+  // This should never happen since external users of the ORT API should only be able to create DML_EXTERNAL memory
+  if (wrapping_allocator->Info()->device.MemType() != OrtDevice::MemType::DML_EXTERNAL) {
+    return OrtApis::CreateStatus(ORT_INVALID_ARGUMENT, "The resource has been allocated with ");
+  }
+
+  *d3d_resource = static_cast<Dml::AllocationInfo*>(allocation)->GetD3D12Resource();
   (*d3d_resource)->AddRef();
+
 #else
   *d3d_resource = nullptr;
 #endif  // USE_DML
@@ -226,7 +244,7 @@ static constexpr OrtDmlApi ort_dml_api_10_to_x = {
   &OrtSessionOptionsAppendExecutionProviderEx_DML,
   &CreateGPUAllocationFromD3DResource,
   &FreeGPUAllocation,
-  &GetD3D12ResourceFromAllocation
+  &GetD3D12ResourceFromAllocation,
 };
 
 const OrtDmlApi* GetOrtDmlApi(_In_ uint32_t /*version*/) NO_EXCEPTION {
