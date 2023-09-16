@@ -176,7 +176,7 @@ def _optimize_sd_pipeline(
 
         m.get_operator_statistics()
         m.get_fused_operator_statistics()
-        m.save_model_to_file(str(optimized_model_path), use_external_data_format=use_external_data_format)
+        m.save_model_to_file(str(optimized_model_path), use_external_data_format=use_external_data)
         logger.info("%s is optimized", name)
         logger.info("*" * 20)
 

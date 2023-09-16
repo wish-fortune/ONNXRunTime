@@ -10,6 +10,7 @@ import statistics
 import sys
 import time
 
+import __init__  # noqa: F401 as walk-around to run this script directly
 import coloredlogs
 
 # import torch before onnxruntime so that onnxruntime uses the cuDNN in the torch package.
@@ -19,6 +20,7 @@ SD_MODELS = {
     "1.5": "runwayml/stable-diffusion-v1-5",
     "2.0": "stabilityai/stable-diffusion-2",
     "2.1": "stabilityai/stable-diffusion-2-1",
+    "xl-base-1.0": "stabilityai/stable-diffusion-xl-base-1.0",
 }
 
 PROVIDERS = {
@@ -209,23 +211,35 @@ def get_ort_pipeline(model_name: str, directory: str, provider, disable_safety_c
 
 
 def get_torch_pipeline(model_name: str, disable_safety_checker: bool, enable_torch_compile: bool, use_xformers: bool):
-    from diffusers import DDIMScheduler, StableDiffusionPipeline
-    from torch import channels_last, float16
+    is_xl = "xl" in model_name
+    if is_xl:
+        from diffusers import StableDiffusionXLPipeline
 
-    pipe = StableDiffusionPipeline.from_pretrained(model_name, torch_dtype=float16).to("cuda")
+        pipe = StableDiffusionXLPipeline.from_pretrained(
+            model_name, torch_dtype=torch.float16, variant="fp16", use_safetensors=True
+        ).to("cuda")
+        # For SDXL, channels_last is slower, and the default scheduler is EulerDiscreteScheduler
+    else:
+        from diffusers import DDIMScheduler, StableDiffusionPipeline
 
-    pipe.unet.to(memory_format=channels_last)  # in-place operation
+        pipe = StableDiffusionPipeline.from_pretrained(model_name, torch_dtype=torch.float16).to("cuda")
+        pipe.unet.to(memory_format=torch.channels_last)  # in-place operation
+        pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
 
     if use_xformers:
         pipe.enable_xformers_memory_efficient_attention()
 
     if enable_torch_compile:
-        pipe.unet = torch.compile(pipe.unet)
-        pipe.vae = torch.compile(pipe.vae)
-        pipe.text_encoder = torch.compile(pipe.text_encoder)
-        print("Torch compiled unet, vae and text_encoder")
+        if is_xl:
+            pipe.unet = torch.compile(pipe.unet, mode="reduce-overhead", fullgraph=True)
+            # No much improvement to compile vae, text_encoder and text_encoder_2 so we only compile unet here.
+            print("Torch compiled unet")
+        else:
+            pipe.unet = torch.compile(pipe.unet)
+            pipe.vae = torch.compile(pipe.vae)
+            pipe.text_encoder = torch.compile(pipe.text_encoder)
+            print("Torch compiled unet, vae and text_encoder")
 
-    pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
     pipe.set_progress_bar_config(disable=True)
 
     if disable_safety_checker:
@@ -308,7 +322,7 @@ def run_ort_pipeline(
     }
 
 
-def run_torch_pipeline(
+def run_torch_xl_pipeline(
     pipe,
     batch_size: int,
     image_filename_prefix: str,
@@ -320,6 +334,80 @@ def run_torch_pipeline(
     start_memory,
     memory_monitor_type,
 ):
+    prompts = example_prompts()
+
+    # total 2 runs of warm up, and measure GPU memory for CUDA EP
+    def warmup():
+        pipe(prompt="warm up")
+
+    # Run warm up, and measure GPU memory of two runs (The first run has cuDNN algo search so it might need more memory)
+    first_run_memory = measure_gpu_memory(memory_monitor_type, warmup, start_memory)
+    second_run_memory = measure_gpu_memory(memory_monitor_type, warmup, start_memory)
+
+    warmup()
+
+    torch.set_grad_enabled(False)
+
+    latency_list = []
+    for i, prompt in enumerate(prompts):
+        if i >= num_prompts:
+            break
+        torch.cuda.synchronize()
+        for j in range(batch_count):
+            inference_start = time.time()
+            images = pipe(prompt=prompt).images
+
+            torch.cuda.synchronize()
+            inference_end = time.time()
+            latency = inference_end - inference_start
+            latency_list.append(latency)
+            print(f"Inference took {latency:.3f} seconds")
+            for k, image in enumerate(images):
+                image.save(f"{image_filename_prefix}_{i}_{j}_{k}.jpg")
+
+    return {
+        "engine": "torch",
+        "version": torch.__version__,
+        "height": None,
+        "width": width,
+        "steps": steps,
+        "batch_size": batch_size,
+        "batch_count": batch_count,
+        "num_prompts": num_prompts,
+        "average_latency": sum(latency_list) / len(latency_list),
+        "median_latency": statistics.median(latency_list),
+        "first_run_memory_MB": first_run_memory,
+        "second_run_memory_MB": second_run_memory,
+    }
+
+
+def run_torch_pipeline(
+    pipe,
+    batch_size: int,
+    image_filename_prefix: str,
+    height,
+    width,
+    steps,
+    num_prompts,
+    batch_count,
+    start_memory,
+    memory_monitor_type,
+    is_xl,
+):
+    if is_xl:
+        return run_torch_xl_pipeline(
+            pipe,
+            batch_size,
+            image_filename_prefix,
+            height,
+            width,
+            steps,
+            num_prompts,
+            batch_count,
+            start_memory,
+            memory_monitor_type,
+        )
+
     prompts = example_prompts()
 
     # total 2 runs of warm up, and measure GPU memory for CUDA EP
@@ -374,6 +462,166 @@ def run_torch_pipeline(
         "first_run_memory_MB": first_run_memory,
         "second_run_memory_MB": second_run_memory,
     }
+
+
+def get_optimum_ort_pipeline(
+    model_name: str,
+    directory: str,
+    provider="CUDAExecutionProvider",
+    disable_safety_checker: bool = True,
+):
+    from optimum.onnxruntime import ORTStableDiffusionPipeline, ORTStableDiffusionXLPipeline
+
+    if directory is not None and os.path.exists(directory):
+        if "xl" in model_name:
+            pipeline = ORTStableDiffusionXLPipeline.from_pretrained(
+                directory,
+                provider=provider,
+                session_options=None,
+                use_io_binding=False,
+            )
+        else:
+            pipeline = ORTStableDiffusionPipeline.from_pretrained(
+                directory,
+                provider=provider,
+                use_io_binding=False,
+            )
+    elif "xl" in model_name:
+        pipeline = ORTStableDiffusionXLPipeline.from_pretrained(
+            model_name,
+            export=True,
+            provider=provider,
+            session_options=None,
+            use_io_binding=False,
+        )
+        pipeline.save_pretrained(directory)
+    else:
+        pipeline = ORTStableDiffusionPipeline.from_pretrained(
+            model_name,
+            export=True,
+            provider=provider,
+            use_io_binding=False,
+        )
+        pipeline.save_pretrained(directory)
+
+    if disable_safety_checker:
+        pipeline.safety_checker = None
+        pipeline.feature_extractor = None
+
+    return pipeline
+
+
+def run_optimum_ort_pipeline(
+    pipe,
+    batch_size: int,
+    image_filename_prefix: str,
+    height,
+    width,
+    steps,
+    num_prompts,
+    batch_count,
+    start_memory,
+    memory_monitor_type,
+):
+    from optimum.onnxruntime import ORTStableDiffusionPipeline, ORTStableDiffusionXLPipeline
+
+    assert isinstance(pipe, (ORTStableDiffusionPipeline, ORTStableDiffusionXLPipeline))
+
+    prompts = example_prompts()
+
+    def warmup():
+        pipe("warm up", height, width, num_inference_steps=steps, num_images_per_prompt=batch_size)
+
+    # Run warm up, and measure GPU memory of two runs.
+    # The first run has algo search for cuDNN/MIOpen, so it might need more memory.
+    first_run_memory = measure_gpu_memory(memory_monitor_type, warmup, start_memory)
+    second_run_memory = measure_gpu_memory(memory_monitor_type, warmup, start_memory)
+
+    warmup()
+
+    latency_list = []
+    for i, prompt in enumerate(prompts):
+        if i >= num_prompts:
+            break
+        for j in range(batch_count):
+            inference_start = time.time()
+            images = pipe(
+                prompt,
+                height,
+                width,
+                num_inference_steps=steps,
+                negative_prompt=None,
+                guidance_scale=7.5,
+                num_images_per_prompt=batch_size,
+            ).images
+            inference_end = time.time()
+            latency = inference_end - inference_start
+            latency_list.append(latency)
+            print(f"Inference took {latency:.3f} seconds")
+            for k, image in enumerate(images):
+                image.save(f"{image_filename_prefix}_{i}_{j}_{k}.jpg")
+
+    from onnxruntime import __version__ as ort_version
+
+    return {
+        "engine": "optimum_ort",
+        "version": ort_version,
+        "height": height,
+        "width": width,
+        "steps": steps,
+        "batch_size": batch_size,
+        "batch_count": batch_count,
+        "num_prompts": num_prompts,
+        "average_latency": sum(latency_list) / len(latency_list),
+        "median_latency": statistics.median(latency_list),
+        "first_run_memory_MB": first_run_memory,
+        "second_run_memory_MB": second_run_memory,
+    }
+
+
+def run_optimum_ort(
+    model_name: str,
+    directory: str,
+    provider: str,
+    batch_size: int,
+    disable_safety_checker: bool,
+    height: int,
+    width: int,
+    steps: int,
+    num_prompts: int,
+    batch_count: int,
+    start_memory,
+    memory_monitor_type,
+):
+    load_start = time.time()
+    pipe = get_optimum_ort_pipeline(model_name, directory, provider, disable_safety_checker)
+    load_end = time.time()
+    print(f"Model loading took {load_end - load_start} seconds")
+
+    image_filename_prefix = get_image_filename_prefix("optimum", model_name, batch_size, disable_safety_checker)
+    result = run_optimum_ort_pipeline(
+        pipe,
+        batch_size,
+        image_filename_prefix,
+        height,
+        width,
+        steps,
+        num_prompts,
+        batch_count,
+        start_memory,
+        memory_monitor_type,
+    )
+
+    result.update(
+        {
+            "model_name": model_name,
+            "directory": directory,
+            "provider": provider.replace("ExecutionProvider", ""),
+            "disable_safety_checker": disable_safety_checker,
+            "enable_cuda_graph": False,
+        }
+    )
+    return result
 
 
 def run_ort(
@@ -479,10 +727,7 @@ def export_and_run_ort(
             break
         for j in range(batch_count):
             inference_start = time.time()
-            images = pipe(
-                [prompt] * batch_size,
-                num_inference_steps=steps,
-            ).images
+            images = pipe([prompt] * batch_size, num_inference_steps=steps).images
             inference_end = time.time()
             latency = inference_end - inference_start
             latency_list.append(latency)
@@ -717,6 +962,7 @@ def run_torch(
     print(f"Model loading took {load_end - load_start} seconds")
 
     image_filename_prefix = get_image_filename_prefix("torch", model_name, batch_size, disable_safety_checker)
+    is_xl = "xl" in model_name
 
     if not enable_torch_compile:
         with torch.inference_mode():
@@ -731,6 +977,7 @@ def run_torch(
                 batch_count,
                 start_memory,
                 memory_monitor_type,
+                is_xl,
             )
     else:
         result = run_torch_pipeline(
@@ -744,6 +991,7 @@ def run_torch(
             batch_count,
             start_memory,
             memory_monitor_type,
+            is_xl,
         )
 
     result.update(
@@ -767,7 +1015,7 @@ def parse_arguments():
         required=False,
         type=str,
         default="onnxruntime",
-        choices=["onnxruntime", "torch", "tensorrt"],
+        choices=["onnxruntime", "optimum", "torch", "tensorrt"],
         help="Engines to benchmark. Default is onnxruntime.",
     )
 
@@ -980,6 +1228,25 @@ def main():
             start_memory,
             memory_monitor_type,
             args.enable_cuda_graph,
+        )
+    elif args.engine == "optimum" and provider == "CUDAExecutionProvider":
+        # TODO(tianleiwu): enable flash attention for causal, which is used in clip model
+        if "xl" in args.version:
+            os.environ["ORT_ENABLE_FUSED_CAUSAL_ATTENTION"] = "1"
+
+        result = run_optimum_ort(
+            sd_model,
+            args.pipeline,
+            provider,
+            args.batch_size,
+            not args.enable_safety_checker,
+            args.height,
+            args.width,
+            args.steps,
+            args.num_prompts,
+            args.batch_count,
+            start_memory,
+            memory_monitor_type,
         )
     elif args.engine == "onnxruntime":
         assert args.pipeline and os.path.isdir(
