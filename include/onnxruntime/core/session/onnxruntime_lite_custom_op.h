@@ -18,6 +18,7 @@
 #include "onnxruntime_cxx_api.h"
 #include <optional>
 #include <numeric>
+#include <functional>
 #include <unordered_set>
 
 namespace Ort {
@@ -25,15 +26,62 @@ namespace Custom {
 
 class TensorBase {
  public:
-  TensorBase(OrtKernelContext* ctx) : ctx_(ctx) {}
+  TensorBase(OrtKernelContext* ctx,
+             size_t indice,
+             bool is_input) : ctx_(ctx), indice_(indice), is_input_(is_input) {}
+
   virtual ~TensorBase() {}
+
   operator bool() const {
     return shape_.has_value();
   }
 
+  const std::vector<int64_t>& Shape() const {
+    if (!shape_.has_value()) {
+      ORT_CXX_API_THROW("tensor shape is not yet initialized", OrtErrorCode::ORT_RUNTIME_EXCEPTION);
+    }
+    return shape_.value();
+  }
+
+  ONNXTensorElementDataType Type() const {
+    return type_;
+  }
+
+  int64_t NumberOfElement() const {
+    if (shape_.has_value()) {
+      return std::accumulate(shape_->begin(), shape_->end(), 1LL, std::multiplies<int64_t>());
+    } else {
+      return 0;
+    }
+  }
+
+  std::string Shape2Str() const {
+    if (shape_.has_value()) {
+      std::string shape_str;
+      for (const auto& dim : *shape_) {
+        shape_str.append(std::to_string(dim));
+        shape_str.append(", ");
+      }
+      return shape_str;
+    } else {
+      return "empty";
+    }
+  }
+
+  bool IsCpuTensor() const {
+    return strcmp("Cpu", mem_type_) == 0;
+  }
+
+  virtual const void* DataRaw() const = 0;
+  virtual size_t SizeInBytes() const = 0;
+
  protected:
   struct KernelContext ctx_;
+  size_t indice_;
+  bool is_input_;
   std::optional<std::vector<int64_t>> shape_;
+  ONNXTensorElementDataType type_ = ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+  const char* mem_type_ = "Cpu";
 };
 
 template <typename T>
@@ -48,13 +96,14 @@ struct Span {
   T operator[](size_t indice) const {
     return data_[indice];
   }
+  const T* data() const { return data_; }
 };
 
 template <typename T>
 class Tensor : public TensorBase {
  public:
   using TT = typename std::remove_reference<T>::type;
-  Tensor(OrtKernelContext* ctx, size_t indice, bool is_input) : TensorBase(ctx), indice_(indice), is_input_(is_input) {
+  Tensor(OrtKernelContext* ctx, size_t indice, bool is_input) : TensorBase(ctx, indice, is_input) {
     if (is_input_) {
       if (indice >= ctx_.GetInputCount()) {
         ORT_CXX_API_THROW("invalid indice for Ort::Custom::Tensor", OrtErrorCode::ORT_INVALID_ARGUMENT);
@@ -62,19 +111,6 @@ class Tensor : public TensorBase {
       const_value_ = ctx_.GetInput(indice);
       auto type_shape_info = const_value_.GetTensorTypeAndShapeInfo();
       shape_ = type_shape_info.GetShape();
-    }
-  }
-  const std::vector<int64_t>& Shape() const {
-    if (!shape_.has_value()) {
-      ORT_CXX_API_THROW("tensor shape is not yet initialized", OrtErrorCode::ORT_RUNTIME_EXCEPTION);
-    }
-    return shape_.value();
-  }
-  int64_t NumberOfElement() const {
-    if (shape_.has_value()) {
-      return std::accumulate(shape_->begin(), shape_->end(), 1LL, std::multiplies<int64_t>());
-    } else {
-      return 0;
     }
   }
   const TT* Data() const {
@@ -104,10 +140,14 @@ class Tensor : public TensorBase {
     }
     return *Data();
   }
+  const void* DataRaw() const override {
+    return reinterpret_cast<const void*>(Data());
+  }
 
+  size_t SizeInBytes() const override {
+    return NumberOfElement() * sizeof(TT);
+  }
  private:
-  size_t indice_;
-  bool is_input_;
   ConstValue const_value_;  // for input
   TT* data_{};              // for output
   Span<T> span_;
@@ -118,7 +158,7 @@ class Tensor<std::string> : public TensorBase {
  public:
   using strings = std::vector<std::string>;
 
-  Tensor(OrtKernelContext* ctx, size_t indice, bool is_input) : TensorBase(ctx), indice_(indice), is_input_(is_input) {
+  Tensor(OrtKernelContext* ctx, size_t indice, bool is_input) : TensorBase(ctx, indice, is_input) {
     if (is_input_) {
       if (indice >= ctx_.GetInputCount()) {
         ORT_CXX_API_THROW("invalid indice for Ort::Custom::Tensor", OrtErrorCode::ORT_INVALID_ARGUMENT);
@@ -147,15 +187,20 @@ class Tensor<std::string> : public TensorBase {
       }
     }
   }
-  int64_t NumberOfElement() const {
-    if (shape_.has_value()) {
-      return std::accumulate(shape_->begin(), shape_->end(), 1ULL, std::multiplies<int64_t>());
-    } else {
-      return 0;
-    }
-  }
   const strings& Data() const {
     return input_strings_;
+  }
+  const void* DataRaw() const override {
+    if (input_strings_.size() != 1) {
+      ORT_CXX_API_THROW("DataRaw() only applies to string scalar", ORT_RUNTIME_EXCEPTION);
+    }
+    return reinterpret_cast<const void*>(input_strings_[0].c_str());
+  }
+  size_t SizeInBytes() const override {
+    if (input_strings_.size() != 1) {
+      ORT_CXX_API_THROW("SizeInBytes() only applies to string scalar", ORT_RUNTIME_EXCEPTION);
+    }
+    return input_strings_[0].size();
   }
   void SetStringOutput(const strings& ss, const std::vector<int64_t>& dims) {
     shape_ = dims;
@@ -179,8 +224,6 @@ class Tensor<std::string> : public TensorBase {
   }
 
  private:
-  size_t indice_;
-  bool is_input_;
   std::vector<std::string> input_strings_;  // for input
 };
 
@@ -190,7 +233,7 @@ class Tensor<std::string_view> : public TensorBase {
   using strings = std::vector<std::string>;
   using string_views = std::vector<std::string_view>;
 
-  Tensor(OrtKernelContext* ctx, size_t indice, bool is_input) : TensorBase(ctx), indice_(indice), is_input_(is_input) {
+  Tensor(OrtKernelContext* ctx, size_t indice, bool is_input) : TensorBase(ctx, indice, is_input) {
     if (is_input_) {
       if (indice >= ctx_.GetInputCount()) {
         ORT_CXX_API_THROW("invalid indice for Ort::Custom::Tensor", OrtErrorCode::ORT_INVALID_ARGUMENT);
@@ -211,15 +254,20 @@ class Tensor<std::string_view> : public TensorBase {
       }
     }
   }
-  int64_t NumberOfElement() const {
-    if (shape_.has_value()) {
-      return std::accumulate(shape_->begin(), shape_->end(), 1ULL, std::multiplies<int64_t>());
-    } else {
-      return 0;
-    }
-  }
   const string_views& Data() const {
     return input_string_views_;
+  }
+  const void* DataRaw() const override {
+    if (input_string_views_.size() != 1) {
+      ORT_CXX_API_THROW("DataRaw() only applies to string scalar", ORT_RUNTIME_EXCEPTION);
+    }
+    return reinterpret_cast<const void*>(input_string_views_[0].data());
+  }
+  size_t SizeInBytes() const override {
+    if (input_string_views_.size() != 1) {
+      ORT_CXX_API_THROW("SizeInBytes() only applies to string scalar", ORT_RUNTIME_EXCEPTION);
+    }
+    return input_string_views_[0].size();
   }
   void SetStringOutput(const strings& ss, const std::vector<int64_t>& dims) {
     shape_ = dims;
@@ -243,15 +291,36 @@ class Tensor<std::string_view> : public TensorBase {
   }
 
  private:
-  size_t indice_;
-  bool is_input_;
   std::vector<char> chars_;                           // for input
   std::vector<std::string_view> input_string_views_;  // for input
 };
 
 using TensorPtr = std::unique_ptr<Custom::TensorBase>;
 
+////////////////////////////// OrtTensorShape //////////////////////////////////
+//struct OrtTensorShape {
+//  OrtTensorShape(const OrtTensorTypeAndShapeInfo* tensor_shape = nullptr) {
+//    if (tensor_shape) {
+//      auto ort_api = GetApi();
+//      size_t dims = 0;
+//      ort_api.GetDimensionsCount(tensor_shape, &dims);
+//    }
+//  }
+//  size_t size() const {
+//    return dims.size();
+//  }
+//  int64_t operator[](size_t ith) const {
+//    return dims.at(ith);
+//  }
+//  void append(int64_t dim) {
+//    dims.push_back(dim);
+//  }
+//  std::vector<int64_t> dims;
+//};
 //////////////////////////// OrtLiteCustomOp ////////////////////////////////
+
+using TensorShapeVec = std::vector<Ort::TensorTypeAndShapeInfo>;
+using ShapeInferenceFn = std::function<void(const TensorShapeVec& input_shapes, TensorShapeVec& output_shape)>;
 
 struct OrtLiteCustomOp : public OrtCustomOp {
   using ConstOptionalFloatTensor = std::optional<const Custom::Tensor<float>&>;
@@ -499,6 +568,12 @@ struct OrtLiteCustomOp : public OrtCustomOp {
     ParseArgs<Ts...>(input_types, output_types);                                                                         \
   }                                                                                                                      \
   template <typename T, typename... Ts>                                                                                  \
+  static typename std::enable_if<0 <= sizeof...(Ts) && std::is_same<T, const std::optional<pack_type>>::value>::type     \
+  ParseArgs(std::vector<ONNXTensorElementDataType>& input_types, std::vector<ONNXTensorElementDataType>& output_types) { \
+    input_types.push_back(onnx_type);                                                                                    \
+    ParseArgs<Ts...>(input_types, output_types);                                                                         \
+  }                                                                                                                      \
+  template <typename T, typename... Ts>                                                                                  \
   static typename std::enable_if<0 <= sizeof...(Ts) && std::is_same<T, std::optional<pack_type>>::value>::type           \
   ParseArgs(std::vector<ONNXTensorElementDataType>& input_types, std::vector<ONNXTensorElementDataType>& output_types) { \
     input_types.push_back(onnx_type);                                                                                    \
@@ -597,7 +672,41 @@ struct OrtLiteCustomOp : public OrtCustomOp {
     OrtCustomOp::GetVariadicInputHomogeneity = [](const OrtCustomOp*) { return 0; };
     OrtCustomOp::GetVariadicOutputMinArity = [](const OrtCustomOp*) { return 0; };
     OrtCustomOp::GetVariadicOutputHomogeneity = [](const OrtCustomOp*) { return 0; };
+
+    // register a dummpy shape inference function
+    OrtCustomOp::InferOutputShapes = [](const OrtCustomOp* op,
+                                        const OrtTensorTypeAndShapeInfo** input_shapes,
+                                        OrtTensorTypeAndShapeInfo** output_shapes) {
+      auto self = reinterpret_cast<const OrtLiteCustomOp*>(op);
+      if (self->shape_infer_fn_) {
+        TensorShapeVec input_shapes_wrap_vec;
+        size_t num_inputs = op->GetInputTypeCount(op);
+        for (size_t ith_input = 0; ith_input < num_inputs; ++ith_input) {
+          input_shapes_wrap_vec.emplace_back(const_cast<OrtTensorTypeAndShapeInfo*>(input_shapes[ith_input]));
+        }
+
+        size_t num_outputs = op->GetOutputTypeCount(op);
+        TensorShapeVec output_shapes_wrap_vec(num_outputs);
+    
+        self->shape_infer_fn_(input_shapes_wrap_vec, output_shapes_wrap_vec);
+
+        for (size_t ith_output = 0; ith_output < num_outputs; ++ith_output) {
+            output_shapes[ith_output] = output_shapes_wrap_vec[ith_output].release();
+        }
+
+        for (size_t ith_input = 0; ith_input < num_inputs; ++ith_input) {
+            input_shapes_wrap_vec[ith_input].release(); // input_shapes_wrap_vec does not own the pointer
+        }
+      }
+    };
   }
+
+  OrtLiteCustomOp* SetShapeInferenceFn(ShapeInferenceFn fn) {
+    shape_infer_fn_ = std::move(fn);
+    return this;
+  }
+
+  ShapeInferenceFn shape_infer_fn_;
 
   const std::string op_name_;
   const std::string execution_provider_;
@@ -677,8 +786,13 @@ struct OrtLiteCustomFunc : public OrtLiteCustomOp {
 // For the complete example, please search keyword "LiteCustomOpTest" under "<cloned_src_dir>/onnxruntime/test/".
 template <typename CustomOp>
 struct OrtLiteCustomStruct : public OrtLiteCustomOp {
+
   template <typename... Args>
   using CustomComputeFn = void (CustomOp::*)(Args...);
+
+  template <typename... Args>
+  using ConstCustomComputeFn = void (CustomOp::*)(Args...) const;
+
   using MyType = OrtLiteCustomStruct<CustomOp>;
 
   struct Kernel {
@@ -696,6 +810,16 @@ struct OrtLiteCustomStruct : public OrtLiteCustomOp {
 
   template <typename... Args>
   void init(CustomComputeFn<Args...>) {
+    init<Args...>();
+  }
+
+  template <typename... Args>
+  void init(ConstCustomComputeFn<Args...>) {
+    init<Args...>();
+  }
+
+  template <typename... Args>
+  void init() {
     ParseArgs<Args...>(input_types_, output_types_);
 
     OrtCustomOp::KernelCompute = [](void* op_kernel, OrtKernelContext* context) {
@@ -709,7 +833,7 @@ struct OrtLiteCustomStruct : public OrtLiteCustomOp {
       auto kernel = std::make_unique<Kernel>();
       Ort::ThrowOnError(ort_api->KernelInfo_GetInputCount(info, &kernel->num_input_));
       Ort::ThrowOnError(ort_api->KernelInfo_GetOutputCount(info, &kernel->num_output_));
-      kernel->custom_op_ = std::make_unique<CustomOp>(ort_api, info);
+      kernel->custom_op_ = std::make_unique<CustomOp>(*ort_api, *info);
       auto self = static_cast<const OrtLiteCustomStruct*>(this_);
       kernel->ep_ = self->execution_provider_;
       return reinterpret_cast<void*>(kernel.release());
