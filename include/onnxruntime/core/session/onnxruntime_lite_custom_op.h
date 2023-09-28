@@ -50,6 +50,10 @@ class TensorBase : public ArgBase {
     return shape_.has_value();
   }
 
+  void SetShape(std::vector<int64_t> shape) {
+    shape_ = shape;
+  }
+
   const std::vector<int64_t>& Shape() const {
     if (!shape_.has_value()) {
       ORT_CXX_API_THROW("tensor shape is not yet initialized", OrtErrorCode::ORT_RUNTIME_EXCEPTION);
@@ -158,6 +162,37 @@ class Tensor : public TensorBase {
   size_t SizeInBytes() const override {
     return sizeof(TT) * static_cast<size_t>(NumberOfElement());
   }
+
+  ONNXTensorElementDataType GetTensorElementDataType() const {
+    return const_value_.GetTensorTypeAndShapeInfo().GetElementType();
+  }
+
+  ONNXTensorElementDataType GetTensorElementDataType() {
+    return ctx_.GetOutput(indice_, shape_.value()).GetTensorTypeAndShapeInfo().GetElementType();
+  }
+
+  OrtMemoryInfoDeviceType GetDeviceType() const {
+    return const_value_.GetTensorMemoryInfo().GetDeviceType();
+  }
+
+  OrtMemoryInfoDeviceType GetDeviceType() {
+    return ctx_.GetOutput(indice_, shape_.value()).GetTensorMemoryInfo().GetDeviceType();
+  }
+
+  const void* GetTensorRawData() const {
+    return const_value_.GetTensorRawData();
+  }
+
+  void* GetTensorMutableRawData() {
+    return ctx_.GetOutput(indice_, shape_.value()).GetTensorMutableRawData();
+  }
+
+//  ConstValue& GetSourceValue() { return const_value_; }
+//
+//  UnownedValue& GetDestValue(const std::vector<int64_t>& shape) {
+//    shape_ = shape;
+//    return ctx_.GetOutput(indice_, shape);
+//  }
 
  private:
   ConstValue const_value_;  // for input
