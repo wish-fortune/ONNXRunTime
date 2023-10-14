@@ -9,6 +9,8 @@
 #include "core/session/onnxruntime_c_api.h"
 #include "core/framework/ortdevice.h"
 #include "core/framework/stream_handles.h"
+#include "core/framework/op_kernel.h"
+
 #include <climits>
 
 namespace Ort {
@@ -28,40 +30,184 @@ struct ExternalKernelDef {
 
 template <typename... Args>
 ExternalKernelDef* CreateExternalKernelDef(const char* op_name, const char* execution_provider, void (*custom_compute_fn)(Args...),
-                                          const char* domain, int op_since_version_start, int op_since_version_end = INT_MAX) {
+                                           const char* domain, int op_since_version_start, int op_since_version_end = INT_MAX) {
   OrtLiteCustomOp* op = CreateLiteCustomOp(op_name, execution_provider, custom_compute_fn);
   return std::make_unique<ExternalKernelDef>(op, domain, op_since_version_start, op_since_version_end).release();
 }
 
-}
-}
+}  // namespace Custom
+}  // namespace Ort
 
-namespace onnxruntime{
-    class CustomExecutionProvider{
-        public:
-        CustomExecutionProvider() { default_device_ = OrtDevice(); };
-        virtual ~CustomExecutionProvider() = default;
+namespace onnxruntime {
 
-        std::vector<OrtAllocator*>& GetAllocators() { return allocators_; }
-        //std::vector<std::unique_ptr<Ort::Custom::OrtLiteCustomOp>>& GetKernelDefinitions() { return kernel_definitions_; }
-        size_t GetKernelDefinitionCount() { return kernel_definitions_.size(); }
-        Ort::Custom::ExternalKernelDef* GetKernelDefinition(size_t index) {
-            if (index >= kernel_definitions_.size()) return nullptr;
-            return kernel_definitions_[index].get();
-        }
-        std::string& GetType() { return type_; }
-        OrtDevice& GetDevice() { return default_device_; }
+////////////////////////////////////////////////// lite tensors //////////////////////////////////////////////////
+namespace lite {
 
-        virtual bool CanCopy(const OrtDevice&, const OrtDevice&) { return false; }
-        //virtual void MemoryCpy(OrtValue&, const OrtValue&) {}
-        virtual void MemoryCpy(Ort::UnownedValue&, Ort::ConstValue const&) {}
-        virtual void RegisterStreamHandlers(IStreamCommandHandleRegistry&, std::map<OrtDevice, OrtAllocator*>&) const {}
+struct Arg {};
 
-        protected:
-        std::vector<OrtAllocator*> allocators_;
-        //std::vector<std::unique_ptr<Ort::Custom::OrtLiteCustomOp>> kernel_definitions_;
-        std::vector<std::unique_ptr<Ort::Custom::ExternalKernelDef>> kernel_definitions_;
-        std::string type_;
-        OrtDevice default_device_;
-    };
-}
+using ArgPtr = std::unique_ptr<Arg>;
+using ArgPtrs = std::vector<ArgPtr>;
+
+template <typename T>
+struct Tensor : public Arg {
+  using MyType = Tensor<T>;
+  Tensor(onnxruntime::OpKernelContext* ctx, size_t index, bool is_input) : ctx_(ctx), index_(index), is_input_(is_input){};
+  std::vector<int64_t> Shape() {
+    return {};
+  }
+  const T* Data() const {
+    return {};
+  }
+  T* Allocate(MyType* reuse) {
+    return {};
+  }
+
+ private:
+  onnxruntime::OpKernelContext* ctx_ = {};
+  size_t index_;
+  bool is_input_;
+};
+
+template <typename T>
+struct TensorT : Tensor<T> {
+  TensorT(onnxruntime::OpKernelContext* ctx, size_t index) : Tensor(ctx, index, true) {}
+};
+
+template <typename T>
+struct TensorT1 : Tensor<T> {
+  TensorT1(onnxruntime::OpKernelContext* ctx, size_t index) : Tensor(ctx, index, true) {}
+};
+
+template <typename T>
+struct TensorV : Tensor<T> {
+  TensorV(onnxruntime::OpKernelContext* ctx, size_t index) : Tensor(ctx, index, true) {}
+};
+
+template <typename T, int ith_input_to_copy_from = 0>
+struct Reused : Tensor<T> {
+  using MyType = Tensor<T>;
+  Reused(onnxruntime::OpKernelContext* ctx, size_t index) : Tensor(ctx, index, false) {}
+  T* Data() {
+    return {};
+  }
+};
+
+template <typename T, int ith_input_to_alias_from = 0>
+struct Aliased : Reused<T, ith_input_to_alias_from> {
+  using MyType = Tensor<T>;
+  Aliased(onnxruntime::OpKernelContext* ctx, size_t index) : Reused(ctx, index) {}
+  T* Data() {
+    return {};
+  }
+  static int InputIndice() { return ith_input_to_alias_from; }
+};
+
+template <typename... Args>
+struct LiteKernelFn : public onnxruntime::OpKernel {
+  using ComputeFn = onnxruntime::Status (*)(Args...);
+  LiteKernelFn(const OpKernelInfo& info, ComputeFn compute_fn) : OpKernel(info), compute_fn_(compute_fn) {}
+
+  template <size_t ith_input, size_t ith_output, typename... Ts>
+  static typename std::enable_if<sizeof...(Ts) == 0, std::tuple<>>::type
+  CreateTuple(onnxruntime::OpKernelContext*, ArgPtrs&) {
+    return std::make_tuple();
+  }
+
+  // inputs
+  template <size_t ith_input, size_t ith_output, typename T, typename... Ts>
+  static typename std::enable_if<std::is_same<T, const Tensor<float>&>::value, std::tuple<T, Ts...>>::type
+  CreateTuple(onnxruntime::OpKernelContext* context, ArgPtrs& args) {
+    args.push_back(std::make_unique<Tensor<float>>(context, ith_input, true));
+    std::tuple<T> current = std::tuple<T>{reinterpret_cast<T>(*args.back().get())};
+    auto next = CreateTuple<ith_input + 1, ith_output, Ts...>(context, args);
+    return std::tuple_cat(current, next);
+  }
+
+  template <size_t ith_input, size_t ith_output, typename T, typename... Ts>
+  static typename std::enable_if<std::is_same<T, const TensorT<float>&>::value, std::tuple<T, Ts...>>::type
+  CreateTuple(onnxruntime::OpKernelContext* context, ArgPtrs& args) {
+    args.push_back(std::make_unique<TensorT<float>>(context, ith_input));
+    std::tuple<T> current = std::tuple<T>{reinterpret_cast<T>(*args.back().get())};
+    auto next = CreateTuple<ith_input + 1, ith_output, Ts...>(context, args);
+    return std::tuple_cat(current, next);
+  }
+
+  // outputs
+  template <size_t ith_input, size_t ith_output, typename T, typename... Ts>
+  static typename std::enable_if<std::is_same<T, Reused<float>&>::value, std::tuple <T, Ts...>> ::type
+  CreateTuple(onnxruntime::OpKernelContext* context, ArgPtrs& args) {
+    args.push_back(std::make_unique<Reused<float>>(context, ith_output));
+    std::tuple<T> current = std::tuple<T>{reinterpret_cast<T>(*args.back().get())};
+    auto next = CreateTuple<ith_input, ith_output + 1, Ts...>(context, args);
+    return std::tuple_cat(current, next);
+  }
+
+  template <size_t ith_input, size_t ith_output, typename T, typename... Ts>
+  static typename std::enable_if<std::is_same<T, Aliased<float>&>::value, std::tuple<T, Ts...>>::type
+  CreateTuple(onnxruntime::OpKernelContext* context, ArgPtrs& args) {
+    args.push_back(std::make_unique<Aliased<float>>(context, ith_output));
+    std::tuple<T> current = std::tuple<T>{reinterpret_cast<T>(*args.back().get())};
+    auto next = CreateTuple<ith_input, ith_output + 1, Ts...>(context, args);
+    return std::tuple_cat(current, next);
+  }
+
+  onnxruntime::Status Compute(onnxruntime::OpKernelContext* context) const override {
+    ArgPtrs args;
+    auto t = CreateTuple<0, 0, Args...>(context, args);
+    return std::apply([this](Args const&... t_args) { return compute_fn_(t_args...); }, t);
+  }
+
+ private:
+  ComputeFn compute_fn_;
+};
+
+template <typename... Args>
+onnxruntime::KernelDefBuilder RegisterKernel(const char* ep,
+                                             const char* domain,
+                                             const char* op,
+                                             int since_ver,
+                                             int end_ver,
+                                             onnxruntime::Status (*compute_fn)(Args...));
+
+}  // namespace lite
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+class CustomExecutionProvider {
+ public:
+  CustomExecutionProvider() { default_device_ = OrtDevice(); };
+  virtual ~CustomExecutionProvider() = default;
+
+  std::vector<OrtAllocator*>& GetAllocators() { return allocators_; }
+  // std::vector<std::unique_ptr<Ort::Custom::OrtLiteCustomOp>>& GetKernelDefinitions() { return kernel_definitions_; }
+  size_t GetKernelDefinitionCount() { return kernel_definitions_.size(); }
+  Ort::Custom::ExternalKernelDef* GetKernelDefinition(size_t index) {
+    if (index >= kernel_definitions_.size()) return nullptr;
+    return kernel_definitions_[index].get();
+  }
+  std::string& GetType() { return type_; }
+  OrtDevice& GetDevice() { return default_device_; }
+
+  virtual bool CanCopy(const OrtDevice&, const OrtDevice&) { return false; }
+  // virtual void MemoryCpy(OrtValue&, const OrtValue&) {}
+  virtual void MemoryCpy(Ort::UnownedValue&, Ort::ConstValue const&) {}
+  virtual void RegisterStreamHandlers(IStreamCommandHandleRegistry&, std::map<OrtDevice, OrtAllocator*>&) const {}
+
+/////////////////////////////////////////////////// unified kenrel registration ///////////////////////////////////////////////////
+
+  //throw on err
+  template<typename... Args>
+  void RegisterKernel(const char* name,
+                      onnxruntime::Status (*)(Args... args),
+                      size_t start_ver = 0,
+                      size_t end_ver = (1<<30)){};
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+ protected:
+  std::vector<OrtAllocator*> allocators_;
+  // std::vector<std::unique_ptr<Ort::Custom::OrtLiteCustomOp>> kernel_definitions_;
+  std::vector<std::unique_ptr<Ort::Custom::ExternalKernelDef>> kernel_definitions_;
+  std::string type_;
+  OrtDevice default_device_;
+};
+
+}  // namespace onnxruntime
