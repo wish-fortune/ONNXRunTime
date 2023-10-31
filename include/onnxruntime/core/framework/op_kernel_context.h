@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+#include "interface/framework/kernel.h"
+
 namespace onnxruntime {
 class IExecutionFrame;
 class Stream;
@@ -8,7 +10,7 @@ namespace concurrency {
 class ThreadPool;
 }
 
-class OpKernelContext {
+class OpKernelContext : public interface::IKernelContext {
  public:
   using ArgMap = std::unordered_map<std::string, size_t>;
 
@@ -43,7 +45,15 @@ class OpKernelContext {
     }
   }
 
+  const void* InputData(int index) const override {
+    //todo - check tensor type
+    const auto* tensor = Input<onnxruntime::Tensor>(index);
+    return tensor->DataRaw();
+  }
+
   // Fetch a required input, enforcing that it is present.
+  // Fetch a required input, enforcing that it is present. Fetch a required input, enforcing that it is present.
+  // Fetch a required input, enforc Fetch a required input, enforcing that it is present.
   template <typename T>
   const T& RequiredInput(int index) const {
     const T* input_ptr = Input<T>(index);
@@ -67,6 +77,20 @@ class OpKernelContext {
   Tensor* Output(int index, const TensorShape& shape);
   Tensor* Output(int index, const std::vector<int64_t>& shape);
   Tensor* Output(int index, const std::initializer_list<int64_t>& shape);
+
+  void* AllocateOutput(int index, const interface::TensorShape& shape) override {
+    auto* tensor = Output(index, shape);
+    ORT_ENFORCE(tensor);
+    return tensor->MutableDataRaw();
+  }
+
+  const int64_t* InputShape(int index, size_t* num_dims) const override {
+    const auto* tensor = Input<onnxruntime::Tensor>(index);
+    const auto& shape = tensor->Shape();
+    auto dims = shape.GetDims();
+    *num_dims = dims.size();
+    return dims.data();
+  };
 
   // Fetch a required tensor output, enforcing that it is present.
   Tensor& RequiredOutput(int index, const TensorShape& shape) {

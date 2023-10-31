@@ -9,6 +9,7 @@
 #include "core/framework/op_node_proto_helper.h"
 #include "core/graph/graph_viewer.h"
 #include "core/common/gsl.h"
+#include "interface/framework/kernel.h"
 
 namespace onnxruntime {
 
