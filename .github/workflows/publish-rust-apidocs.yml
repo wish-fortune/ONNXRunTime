@@ -1,0 +1,43 @@
+name: Update Rust API Docs
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - rust/**
+      - .github/workflows/publish-rust-apidocs.yml
+  workflow_dispatch:
+
+
+jobs:
+  publish:
+    name: Generate Rust docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install latest nightly
+        uses: actions-rs/toolchain@v1
+        with:
+            toolchain: nightly
+            override: true
+      - name: Run rust docs generation
+        run: |
+           cd rust
+           RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +nightly doc --no-deps
+      - name: Debug
+        run: |
+           cd rust
+           find .
+      - name: Log source commit
+        run: git rev-parse --short HEAD > rust/target/doc/source-version.txt
+      - name: Move Rust docs into site
+        run: |
+          rm -rf _site/docs/api/rust
+          mkdir -p _site/docs/api
+          mv rust/target/doc _site/docs/api/rust
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: onnxruntime-rust-apidocs
+          path: _site
+          retention-days: 60
