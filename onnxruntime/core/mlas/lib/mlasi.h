@@ -1197,7 +1197,7 @@ MlasFp32FromBits(
 #pragma warning(pop)
 #endif
 
-#if defined(MLAS_TARGET_WASM_SCALAR)
+#if defined(MLAS_TARGET_SCALAR)
 
 void
 MLASCALL
