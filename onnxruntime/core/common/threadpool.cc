@@ -41,6 +41,16 @@ limitations under the License.
 // Chance of arithmetic overflow could be reduced
 #pragma warning(disable : 26451)
 #endif
+
+#ifdef USE_OCT
+#include <octopus/threadpool.h>
+#include <iostream>
+#endif
+
+#ifdef USE_TBB
+#include <oneapi/tbb.h>
+#endif
+
 namespace onnxruntime {
 
 namespace concurrency {
@@ -364,6 +374,135 @@ class alignas(CACHE_LINE_BYTES) LoopCounter {
   alignas(CACHE_LINE_BYTES) LoopCounterShard _shards[MAX_SHARDS];
   const unsigned _num_shards;
 };
+
+#if defined(USE_TBB) || defined(USE_OCT)
+
+ThreadPool::ThreadPool(Env* /*env*/,
+                       const ThreadOptions& thread_options,
+                       const NAME_CHAR_TYPE* /*name*/,
+                       int degree_of_parallelism,
+                       bool /*low_latency_hint*/,
+                       bool /*force_hybrid*/) : dop_(degree_of_parallelism), thread_options_(thread_options) {
+  ORT_ENFORCE(dop_ > 0, "dop must be a positive integer!");
+#ifdef USE_OCT
+  /*
+  impl_ = new octopus::ThreadPool(
+      dop_, [env](size_t thrd_idx, void* param) {
+        env->InitThread(static_cast<int>(thrd_idx), param);
+      },
+      &thread_options_);
+  */
+  impl_ = new octopus::ThreadPool(dop_);
+#else
+  impl_ = new oneapi::tbb::global_control(oneapi::tbb::global_control::max_allowed_parallelism,
+                                          degree_of_parallelism);
+#endif
+}
+
+ThreadPool::~ThreadPool() {
+  if (impl_) {
+#ifdef USE_OCT
+    delete ((octopus::ThreadPool*)impl_);
+#else
+    delete ((oneapi::tbb::global_control*)impl_);
+#endif
+  }
+}
+
+void ThreadPool::Schedule(std::function<void()> fn) {
+  fn();
+}
+
+void ThreadPool::TryParallelFor(ThreadPool* tp,
+                                std::ptrdiff_t total,
+                                double /*cost_per_unit*/,
+                                const FN& fn) {
+  if (tp && total) {
+    tp->ParallelFor(total, fn);
+  } else {
+    fn(0, total);
+  }
+}
+
+void ThreadPool::TryParallelFor(ThreadPool* tp,
+                                std::ptrdiff_t total,
+                                const TensorOpCost& /*cost_per_unit*/,
+                                const FN& fn) {
+  if (tp && total) {
+    tp->ParallelFor(total, fn);
+  } else {
+    fn(0, total);
+  }
+}
+
+void ThreadPool::TrySimpleParallelFor(ThreadPool* tp,
+                                      std::ptrdiff_t total,
+                                      const SimpleFN& simple_fn) {
+  if (tp && total) {
+    FN fn = [simple_fn](std::ptrdiff_t first, std::ptrdiff_t last) {
+      for (std::ptrdiff_t i = first; i < last; ++i) {
+        simple_fn(i);
+      }
+    };
+    tp->ParallelFor(total, fn);
+  } else {
+    for (std::ptrdiff_t i = 0; i < total; ++i) {
+      simple_fn(i);
+    }
+  }
+}
+
+constexpr std::ptrdiff_t unit_block_size = 1;
+
+void ThreadPool::TryBatchParallelFor(ThreadPool* tp,
+                                     std::ptrdiff_t total,
+                                     const SimpleFN& simple_fn,
+                                     std::ptrdiff_t num_batches) {
+  if (tp && total && num_batches) {
+    auto batch_size = std::max(static_cast<std::ptrdiff_t>(std::ceil(static_cast<double>(total) / num_batches)), unit_block_size);
+    SimpleFN simple_fn_wrapper = [batch_size, total, simple_fn](std::ptrdiff_t ith_batch) {
+      auto from = ith_batch * batch_size;
+      auto to = std::min(total, from + batch_size);
+      for (std::ptrdiff_t i = from; i < to; ++i) {
+        simple_fn(i);
+      }
+    };
+    TrySimpleParallelFor(tp, num_batches, simple_fn_wrapper);
+  } else {
+    for (std::ptrdiff_t i = 0; i < total; ++i) {
+      simple_fn(i);
+    }
+  }
+}
+
+#ifdef USE_OCT
+
+void ThreadPool::ParallelFor(std::ptrdiff_t total, const FN& fn) {
+  //octopus::AffinityPartitioner partitioner(2, std::max(total / (10 * dop_), unit_block_size));
+  octopus::BinaryPartitioner partitioner(1); // cache_line_size(usually 64 bytes)/sizeof(float)
+  ((octopus::ThreadPool*)impl_)->ParallFor(const_cast<FN*>(&fn), total, &partitioner);
+}
+
+#else
+
+struct TbbTask {
+  TbbTask(const FN& fn) : fn_(fn) {}
+  void operator()(const oneapi::tbb::blocked_range<std::ptrdiff_t>& r) const {
+    auto begin = r.begin();
+    auto end = r.end();
+    fn_(begin, end);
+  }
+  const FN& fn_;
+};
+
+void ThreadPool::ParallelFor(std::ptrdiff_t total, const FN& fn) {
+  TbbTask tbb_task(fn);
+  oneapi::tbb::parallel_for(oneapi::tbb::blocked_range<std::ptrdiff_t>(0, total, 1), tbb_task);
+}
+
+#endif
+
+#else
 
 #ifdef _MSC_VER
 #pragma warning(pop) /* Padding added in LoopCounterShard, LoopCounter */
@@ -702,6 +841,8 @@ void ThreadPool::TryParallelFor(concurrency::ThreadPool* tp, std::ptrdiff_t tota
   }
   tp->ParallelFor(total, cost_per_unit, fn);
 }
+
+#endif
 
 }  // namespace concurrency
 }  // namespace onnxruntime

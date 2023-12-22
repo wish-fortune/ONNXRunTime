@@ -717,6 +717,8 @@ def parse_arguments():
     parser.add_argument("--use_azure", action="store_true", help="Enable azure EP.")
 
     parser.add_argument("--use_cache", action="store_true", help="Use compiler cache in CI")
+    parser.add_argument("--use_tbb", action="store_true", help="Use intel tbb for multi-threading")
+    parser.add_argument("--use_oct", action="store_true", help="Use octopus for multi-threading")
 
     parser.add_argument("--use_triton_kernel", action="store_true", help="Use triton compiled kernels")
     parser.add_argument("--use_lock_free_queue", action="store_true", help="Use lock-free task queue for threadpool.")
@@ -1401,6 +1403,12 @@ def generate_build_tree(
 
     if args.use_azure:
         add_default_definition(cmake_extra_defines, "onnxruntime_USE_AZURE", "ON")
+
+    if args.use_tbb:
+        add_default_definition(cmake_extra_defines, "onnxruntime_USE_TBB", "ON")
+
+    if args.use_oct:
+        add_default_definition(cmake_extra_defines, "onnxruntime_USE_OCT", "ON")
 
     if args.use_lock_free_queue:
         add_default_definition(cmake_extra_defines, "onnxruntime_USE_LOCK_FREE_QUEUE", "ON")
