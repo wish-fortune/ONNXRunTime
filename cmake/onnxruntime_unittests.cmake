@@ -580,6 +580,10 @@ if(onnxruntime_USE_ARMNN)
   list(APPEND onnxruntime_test_providers_dependencies onnxruntime_providers_armnn)
 endif()
 
+if(onnxruntime_USE_SHL)
+  list(APPEND onnxruntime_test_providers_dependencies onnxruntime_providers_shl)
+endif()
+
 if (onnxruntime_ENABLE_LANGUAGE_INTEROP_OPS)
   set(ONNXRUNTIME_INTEROP_TEST_LIBS PRIVATE onnxruntime_language_interop onnxruntime_pyop)
 endif()
@@ -602,6 +606,7 @@ set(ONNXRUNTIME_TEST_LIBS
     # ${PROVIDERS_TVM}
     ${PROVIDERS_XNNPACK}
     ${PROVIDERS_AZURE}
+    ${PROVIDERS_SHL}
     onnxruntime_optimizer
     onnxruntime_providers
     onnxruntime_util
@@ -1771,3 +1776,10 @@ if (NOT onnxruntime_MINIMAL_BUILD AND NOT onnxruntime_EXTENDED_MINIMAL_BUILD
 endif()
 
 include(onnxruntime_fuzz_test.cmake)
+
+if (onnxruntime_USE_SHL)
+  file(GLOB_RECURSE onnxruntime_test_providers_shl_src CONFIGURE_DEPENDS
+    "${TEST_SRC_DIR}/providers/shl/*"
+    )
+  list(APPEND onnxruntime_test_providers_src ${onnxruntime_test_providers_shl_src})
+endif()
