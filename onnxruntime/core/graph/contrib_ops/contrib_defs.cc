@@ -1061,6 +1061,53 @@ ONNX_MS_OPERATOR_SET_SCHEMA(GridSample, 1,
                                   updateOutputShape(ctx, 0, {N, C, H_out, W_out});
                                 }));
 
+static const char* ImageEncoder_ver1_doc =
+    R"DOC(encodes an image.
+The following image formats are supported:
+JPEG RGB, RGB interleaved, BGR, BGR interleaved
+Interleaved images follow a channel-last layout: (Height, Width, Channels).
+)DOC";
+
+void ImageEncoderShapeInference(InferenceContext& ctx) {
+  if (hasInputShape(ctx, 0)) {
+    auto& input_shape = getInputShape(ctx, 0);
+    if (input_shape.dim_size() != 4) {
+      fail_shape_inference("Input tensor must be 4-dimensional");
+    }
+  }
+  propagateElemTypeFromDtypeToOutput(ctx, TensorProto::UINT8, 0);
+  auto output_type = ctx.getOutputType(0);
+  auto* sh = output_type->mutable_tensor_type()->mutable_shape();
+  sh->clear_dim();
+  sh->add_dim();
+}
+
+ONNX_MS_OPERATOR_SET_SCHEMA(
+    ImageEncoder,
+    1,
+    OpSchema()
+        .SetDoc(ImageEncoder_ver1_doc)
+        .Attr(
+            "pixel_format",
+            "Pixel format. Can be one of \"RGB\", \"BGR\", \"Grayscale\"",
+            AttributeProto::STRING,
+            std::string("RGB"))
+        .Attr(
+            "subsampling",
+            "Chroma subsampling to be used. Can be one of \"444\", \"422\", \"420\", \"440\", \"411\", \"410\", \"400\""
+            "default value is \"420\"",
+            AttributeProto::STRING,
+            std::string("420"))
+        .Attr(
+            "quality",
+            "Integer value of quality between 1 and 100, where 100 is the highest quality. Default value is 70.",
+            AttributeProto::INT,
+            std::int64_t(70))
+        .Input(0, "image", "original image", "T", OpSchema::Single, true, 1, OpSchema::NonDifferentiable)
+        .Output(0, "encoded_stream", "Encoded stream", "T", OpSchema::Single, true, 1, OpSchema::NonDifferentiable)
+        .TypeConstraint("T", {"tensor(uint8)"}, "Constrain input types to 8-bit unsigned integer tensor.")
+        .TypeAndShapeInferenceFunction(ImageEncoderShapeInference));
+
 ONNX_MS_OPERATOR_SET_SCHEMA(
     UnfoldTensor, 1,
     OpSchema()
