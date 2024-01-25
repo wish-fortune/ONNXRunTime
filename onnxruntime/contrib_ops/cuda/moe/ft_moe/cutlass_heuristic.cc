@@ -16,7 +16,6 @@
 #ifdef USE_CUTLASS
 
 #include "cutlass_heuristic.h"
-
 #include <cuda_runtime_api.h>
 #include <vector>
 #include <stdexcept>

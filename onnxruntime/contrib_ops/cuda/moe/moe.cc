@@ -3,6 +3,7 @@
 
 #ifdef USE_CUTLASS
 
+#include <type_traits>
 #include "core/common/safeint.h"
 #include "core/providers/cuda/cuda_common.h"
 #include "moe.h"
@@ -15,47 +16,78 @@ namespace onnxruntime {
 namespace contrib {
 namespace cuda {
 
-#define REGISTER_KERNEL_TYPED(T)                                  \
-  ONNX_OPERATOR_TYPED_KERNEL_EX(                                  \
-      MoE,                                                        \
-      kMSDomain,                                                  \
-      1,                                                          \
-      T,                                                          \
-      kCudaExecutionProvider,                                     \
-      (*KernelDefBuilder::Create())                               \
-          .MayInplace(0, 0)                                       \
-          .TypeConstraint("T", DataTypeImpl::GetTensorType<T>()), \
-      MoE<T>);
+#define REGISTER_KERNEL_TYPED(T, T1)                                \
+  ONNX_OPERATOR_TYPED_KERNEL_EX(                                    \
+      MoE,                                                          \
+      kMSDomain,                                                    \
+      1,                                                            \
+      T##_##T1,                                                     \
+      kCudaExecutionProvider,                                       \
+      (*KernelDefBuilder::Create())                                 \
+          .MayInplace(0, 0)                                         \
+          .TypeConstraint("T", DataTypeImpl::GetTensorType<T>())    \
+          .TypeConstraint("T1", DataTypeImpl::GetTensorType<T1>()), \
+      MoE<T, T1>);
 
-REGISTER_KERNEL_TYPED(float)
-REGISTER_KERNEL_TYPED(MLFloat16)
+REGISTER_KERNEL_TYPED(float, float)
+REGISTER_KERNEL_TYPED(MLFloat16, MLFloat16)
+REGISTER_KERNEL_TYPED(MLFloat16, uint8_t)
 
 using namespace ONNX_NAMESPACE;
 
-template <typename T>
-MoE<T>::MoE(const OpKernelInfo& op_kernel_info) : CudaKernel(op_kernel_info), MoEBase(op_kernel_info) {
+namespace {
+template <typename T, bool use_quint4x2>
+struct ToCudaTypeWrapper : public ToCudaType<T> {};
+
+template <>
+struct ToCudaTypeWrapper<uint8_t, false> {
+  using MappedType = uint8_t;
+};
+
+template <>
+struct ToCudaTypeWrapper<uint8_t, true> {
+  using MappedType = cutlass::uint4b_t;
+};
+}  // anonymous namespace
+
+template <typename T, typename WeightT>
+MoE<T, WeightT>::MoE(const OpKernelInfo& op_kernel_info) : CudaKernel(op_kernel_info), MoEBase(op_kernel_info) {
 }
 
-template <typename T>
-Status MoE<T>::ComputeInternal(OpKernelContext* context) const {
+template <typename T, typename WeightT>
+Status MoE<T, WeightT>::ComputeInternal(OpKernelContext* context) const {
   const Tensor* input = context->Input<Tensor>(0);
   const Tensor* router_probs = context->Input<Tensor>(1);
   const Tensor* fc1_experts_weights = context->Input<Tensor>(2);
-  const Tensor* fc2_experts_weights = context->Input<Tensor>(3);
+  const Tensor* fc1_scales_optional = context->Input<Tensor>(3);
   const Tensor* fc1_experts_bias_optional = context->Input<Tensor>(4);
-  const Tensor* fc2_experts_bias_optional = context->Input<Tensor>(5);
+  const Tensor* fc2_experts_weights = context->Input<Tensor>(5);
+  const Tensor* fc2_scales_optional = context->Input<Tensor>(6);
+  const Tensor* fc2_experts_bias_optional = context->Input<Tensor>(7);
+  const Tensor* fc3_experts_weights_optional = context->Input<Tensor>(8);
+  const Tensor* fc3_scales_optional = context->Input<Tensor>(9);
+  const Tensor* fc3_experts_bias_optional = context->Input<Tensor>(10);
 
+  // TODO: check scales shapes/how int4 weight shapes change?
   MoEParameters moe_params;
-  ORT_RETURN_IF_ERROR(CheckInputs(moe_params, input, router_probs, fc1_experts_weights, fc2_experts_weights,
-                                  fc1_experts_bias_optional, fc2_experts_bias_optional));
+  ORT_RETURN_IF_ERROR(CheckInputs(moe_params, input, router_probs, fc1_experts_weights, fc1_experts_bias_optional,
+                                  fc2_experts_weights, fc2_experts_bias_optional, fc3_experts_weights_optional,
+                                  fc3_experts_bias_optional, std::is_same_v<WeightT, uint8_t>));
 
-  typedef typename ToCudaType<T>::MappedType CudaT;
+  static constexpr bool use_quint4x2 = true;
+  using CudaT = typename ToCudaType<T>::MappedType;
+  using CudaWeightT = typename ToCudaTypeWrapper<WeightT, use_quint4x2>::MappedType;
+  // TODO: check type: <CudaT, CudaWeightT> can only be <float, float>, <half, half>, <half, uint8_t> or <half, cutlass::uint4b_t>
+
   auto stream = context->GetComputeStream();
 
   auto& device_prop = GetDeviceProp();
   const int sm = device_prop.major * 10 + device_prop.minor;
 
-  ort_fastertransformer::CutlassMoeFCRunner<CudaT, CudaT> moe_runner(sm);
+  ort_fastertransformer::CutlassMoeFCRunner<
+      CudaT,
+      CudaWeightT>
+      moe_runner(sm, fc3_experts_weights_optional != nullptr, normalize_routing_weights_);
 
   size_t ws_size =
       moe_runner.getWorkspaceSize(static_cast<int>(moe_params.num_rows), static_cast<int>(moe_params.hidden_size),
@@ -79,26 +111,42 @@ Status MoE<T>::ComputeInternal(OpKernelContext* context) const {
   IAllocatorUniquePtr<void> expert_for_source_row =
       IAllocator::MakeUniquePtr<void>(allocator, expert_for_source_row_size, false, stream);
 
-  // fc1_scales and fc2_scales are used in quantized MoE
-  const CudaT* fc1_scales_ptr = nullptr;
-  const CudaT* fc2_scales_ptr = nullptr;
-
   moe_runner.run_moe_fc(reinterpret_cast<const CudaT*>(input->template Data<T>()),
                         reinterpret_cast<const CudaT*>(router_probs->template Data<T>()),
-                        reinterpret_cast<const CudaT*>(fc1_experts_weights->template Data<T>()),
-                        std::move(fc1_scales_ptr),
+                        reinterpret_cast<const CudaWeightT*>(fc1_experts_weights->DataRaw()),
+                        fc1_scales_optional == nullptr
+                            ? nullptr
+                            : reinterpret_cast<const CudaT*>(fc1_scales_optional->template Data<T>()),
                         fc1_experts_bias_optional == nullptr
                             ? nullptr
                             : reinterpret_cast<const CudaT*>(fc1_experts_bias_optional->template Data<T>()),
-                        activation_type_, reinterpret_cast<const CudaT*>(fc2_experts_weights->template Data<T>()),
-                        std::move(fc2_scales_ptr), static_cast<int>(moe_params.num_rows),
-                        static_cast<int>(moe_params.hidden_size), static_cast<int>(moe_params.inter_size),
-                        static_cast<int>(moe_params.num_experts), static_cast<int>(moe_params.local_num_experts),
-                        0 /*local_experts_start_index_ used in sharded MoE*/, static_cast<int>(k_),
-                        reinterpret_cast<char*>(work_space.get()), reinterpret_cast<CudaT*>(fc2_output.get()),
+                        activation_type_,
+                        fc3_experts_weights_optional == nullptr
+                            ? nullptr
+                            : reinterpret_cast<const CudaWeightT*>(fc3_experts_weights_optional->DataRaw()),
+                        fc3_scales_optional == nullptr
+                            ? nullptr
+                            : reinterpret_cast<const CudaT*>(fc3_scales_optional->template Data<T>()),
+                        fc3_experts_bias_optional == nullptr
+                            ? nullptr
+                            : reinterpret_cast<const CudaT*>(fc3_experts_bias_optional->template Data<T>()),
+                        reinterpret_cast<const CudaWeightT*>(fc2_experts_weights->DataRaw()),
+                        fc2_scales_optional == nullptr
+                            ? nullptr
+                            : reinterpret_cast<const CudaT*>(fc2_scales_optional->template Data<T>()),
+                        static_cast<int>(moe_params.num_rows),
+                        static_cast<int>(moe_params.hidden_size),
+                        static_cast<int>(moe_params.inter_size),
+                        static_cast<int>(moe_params.num_experts),
+                        static_cast<int>(moe_params.local_num_experts),
+                        0 /*local_experts_start_index_ used in sharded MoE*/,
+                        static_cast<int>(k_),
+                        reinterpret_cast<char*>(work_space.get()),
+                        reinterpret_cast<CudaT*>(fc2_output.get()),
                         reinterpret_cast<CudaT*>(expert_scales.get()),
                         reinterpret_cast<int*>(expanded_source_row_to_expanded_dest_row.get()),
-                        reinterpret_cast<int*>(expert_for_source_row.get()), Stream(context));
+                        reinterpret_cast<int*>(expert_for_source_row.get()),
+                        Stream(context));
 
   Tensor* output = context->Output(0, input->Shape());
 

@@ -17,7 +17,7 @@
 
 #pragma once
 
-#include "ft_gemm_configs.h"
+#include "contrib_ops/cuda/cutlass_extensions/ft_gemm_configs.h"
 
 #include <cstddef>
 #include <cstdint>

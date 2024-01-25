@@ -14,12 +14,9 @@
  * limitations under the License.
  */
 
-#ifdef USE_CUTLASS
-
 #pragma once
 
 #include <cuda_runtime_api.h>
-
 #include "core/providers/cuda/shared_inc/cuda_call.h"
 #include "cutlass/device_kernel.h"
 
@@ -45,12 +42,9 @@ inline int compute_occupancy_for_kernel() {
   }
 
   int max_active_blocks = -1;
-  CUDA_CALL_THROW(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&max_active_blocks, cutlass::Kernel<GemmKernel>,
-                                                                GemmKernel::kThreadCount, smem_size));
+  CUDA_CALL_THROW(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+      &max_active_blocks, cutlass::Kernel<GemmKernel>, GemmKernel::kThreadCount, smem_size));
 
   return max_active_blocks;
 }
-
 }  // namespace ort_fastertransformer
-
-#endif

@@ -33,10 +33,11 @@
 #include "cutlass/arch/arch.h"
 #include "cutlass/epilogue/thread/linear_combination_relu.h"
 
-#include "compute_occupancy.h"
-#include "epilogue_helpers.h"
-#include "layout_traits_helper.h"
-#include "moe_cutlass_kernel.h"
+#include "contrib_ops/cuda/cutlass_extensions/compute_occupancy.h"
+#include "contrib_ops/cuda/cutlass_extensions/epilogue_helpers.h"
+#include "contrib_ops/cuda/cutlass_extensions/gemm/kernel/default_fpA_intB_traits.h"
+#include "contrib_ops/cuda/cutlass_extensions/gemm/kernel/moe_cutlass_kernel.h"
+#include "contrib_ops/cuda/cutlass_extensions/gemm/threadblock/default_mma.h"
 
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
@@ -424,6 +425,14 @@ void MoeGemmRunner<T, WeightType>::moe_gemm(const T* A, const WeightType* B, con
                                             int64_t* total_rows_before_expert, int64_t total_rows, int64_t gemm_n,
                                             int64_t gemm_k, int num_experts, cudaStream_t stream) {
   run_gemm<EpilogueOpNoBias>(A, B, weight_scales, nullptr, C, total_rows_before_expert, total_rows, gemm_n, gemm_k,
+                             num_experts, stream);
+}
+
+template <typename T, typename WeightType>
+void MoeGemmRunner<T, WeightType>::moe_gemm(const T* A, const WeightType* B, const T* weight_scales, const T* biases,
+                                            T* C, int64_t* total_rows_before_expert, int64_t total_rows,
+                                            int64_t gemm_n, int64_t gemm_k, int num_experts, cudaStream_t stream) {
+  run_gemm<EpilogueOpNoBias>(A, B, weight_scales, biases, C, total_rows_before_expert, total_rows, gemm_n, gemm_k,
                              num_experts, stream);
 }
 
