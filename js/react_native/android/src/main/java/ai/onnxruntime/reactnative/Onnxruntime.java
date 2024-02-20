@@ -15,14 +15,11 @@ import ai.onnxruntime.providers.NNAPIFlags;
 import android.net.Uri;
 import android.os.Build;
 import android.util.Log;
-import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.LifecycleEventListener;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
-import com.facebook.react.bridge.ReactContextBaseJavaModule;
-import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.ReadableType;
@@ -30,7 +27,6 @@ import com.facebook.react.bridge.WritableArray;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.modules.blob.BlobModule;
 import java.io.BufferedReader;
-import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
@@ -46,7 +42,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 @RequiresApi(api = Build.VERSION_CODES.N)
-public class OnnxruntimeModule extends ReactContextBaseJavaModule implements LifecycleEventListener {
+public class Onnxruntime implements LifecycleEventListener {
   private static ReactApplicationContext reactContext;
 
   private static OrtEnvironment ortEnvironment = OrtEnvironment.getEnvironment();
@@ -58,27 +54,20 @@ public class OnnxruntimeModule extends ReactContextBaseJavaModule implements Lif
     nextSessionId = nextSessionId.add(BigInteger.valueOf(1));
     return key;
   }
+  private BlobModule blobModule;
 
-  protected BlobModule blobModule;
+  public Onnxruntime(ReactApplicationContext context) { reactContext = context; }
 
-  public OnnxruntimeModule(ReactApplicationContext context) {
-    super(context);
-    reactContext = context;
-  }
-
-  @NonNull
-  @Override
-  public String getName() {
-    return "Onnxruntime";
-  }
+  protected void setBlobModule(BlobModule blobModule) { this.blobModule = blobModule; }
 
   public void checkBlobModule() {
     if (blobModule == null) {
-      blobModule = getReactApplicationContext().getNativeModule(BlobModule.class);
+      blobModule = reactContext.getNativeModule(BlobModule.class);
       if (blobModule == null) {
         throw new RuntimeException("BlobModule is not initialized");
       }
     }
+    setBlobModule(blobModule);
   }
 
   /**
@@ -90,7 +79,6 @@ public class OnnxruntimeModule extends ReactContextBaseJavaModule implements Lif
    * @note the value provided to `promise` includes a key representing the session.
    *       when run() is called, the key must be passed into the first parameter.
    */
-  @ReactMethod
   public void loadModel(String uri, ReadableMap options, Promise promise) {
     try {
       WritableMap resultMap = loadModel(uri, options);
@@ -109,7 +97,6 @@ public class OnnxruntimeModule extends ReactContextBaseJavaModule implements Lif
    * @note the value provided to `promise` includes a key representing the session.
    *       when run() is called, the key must be passed into the first parameter.
    */
-  @ReactMethod
   public void loadModelFromBlob(ReadableMap data, ReadableMap options, Promise promise) {
     try {
       checkBlobModule();
@@ -129,7 +116,6 @@ public class OnnxruntimeModule extends ReactContextBaseJavaModule implements Lif
    * @param key session key representing a session given at loadModel()
    * @param promise output returning back to react native js
    */
-  @ReactMethod
   public void dispose(String key, Promise promise) {
     try {
       dispose(key);
@@ -148,9 +134,9 @@ public class OnnxruntimeModule extends ReactContextBaseJavaModule implements Lif
    * @param options onnxruntime run options
    * @param promise output returning back to react native js
    */
-  @ReactMethod
   public void run(String key, ReadableMap input, ReadableArray output, ReadableMap options, Promise promise) {
     try {
+      checkBlobModule();
       WritableMap resultMap = run(key, input, output, options);
       promise.resolve(resultMap);
     } catch (Exception e) {
@@ -258,8 +244,6 @@ public class OnnxruntimeModule extends ReactContextBaseJavaModule implements Lif
     }
 
     RunOptions runOptions = parseRunOptions(options);
-
-    checkBlobModule();
 
     long startTime = System.currentTimeMillis();
     Map<String, OnnxTensor> feed = new HashMap<>();

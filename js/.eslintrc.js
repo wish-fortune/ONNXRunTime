@@ -230,7 +230,22 @@ module.exports = {
     }
   }, {
     files: ['react_native/lib/**/*.ts'], rules: {
-      '@typescript-eslint/naming-convention': 'off'
+      '@typescript-eslint/naming-convention': 'off',
+    }
+  }, {
+    files: ['react_native/lib/NativeOnnxruntime.ts'], rules: {
+      'unicorn/filename-case': 'off',
+      '@typescript-eslint/ban-types': [
+        'error',
+        {
+          types: {
+            // NOTE: We got issue like https://github.com/facebook/react-native/issues/36431
+            // So we have to use `{}` type here.
+            '{}': false,
+          },
+          extendDefaults: true,
+        }
+      ]
     }
   }, {
     files: ['react_native/scripts/**/*.ts'], rules: {

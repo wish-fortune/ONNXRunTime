@@ -4,7 +4,7 @@
 import {type Backend, InferenceSession, type InferenceSessionHandler, type SessionHandler, Tensor} from 'onnxruntime-common';
 import {Platform} from 'react-native';
 
-import {binding, type Binding, type JSIBlob, jsiHelper} from './binding';
+import {binding, Binding, jsiHelper} from './binding';
 
 type SupportedTypedArray = Exclude<Tensor.DataType, string[]>;
 
@@ -119,7 +119,7 @@ class OnnxruntimeSessionHandler implements InferenceSessionHandler {
     const returnValue: {[name: string]: Binding.EncodedTensorType} = {};
     for (const key in feeds) {
       if (Object.hasOwnProperty.call(feeds, key)) {
-        let data: JSIBlob|string[];
+        let data: Binding.JSIBlobType|string[];
 
         if (Array.isArray(feeds[key].data)) {
           data = feeds[key].data as string[];
@@ -147,7 +147,7 @@ class OnnxruntimeSessionHandler implements InferenceSessionHandler {
         if (Array.isArray(results[key].data)) {
           tensorData = results[key].data as string[];
         } else {
-          const buffer = jsiHelper.resolveArrayBuffer(results[key].data as JSIBlob) as SupportedTypedArray;
+          const buffer = jsiHelper.resolveArrayBuffer(results[key].data as Binding.JSIBlobType) as SupportedTypedArray;
           const typedArray = tensorTypeToTypedArray(results[key].type as Tensor.Type);
           tensorData = new typedArray(buffer, buffer.byteOffset, buffer.byteLength / typedArray.BYTES_PER_ELEMENT);
         }

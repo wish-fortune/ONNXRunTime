@@ -58,7 +58,7 @@ public class OnnxruntimeModuleTest {
   @Test
   public void getName() throws Exception {
     OnnxruntimeModule ortModule = new OnnxruntimeModule(reactContext);
-    ortModule.blobModule = blobModule;
+    ortModule.getOnnxruntime().setBlobModule(blobModule);
     String name = "Onnxruntime";
     Assert.assertEquals(ortModule.getName(), name);
   }
@@ -71,7 +71,8 @@ public class OnnxruntimeModuleTest {
       when(Arguments.createArray()).thenAnswer(i -> new JavaOnlyArray());
 
       OnnxruntimeModule ortModule = new OnnxruntimeModule(reactContext);
-      ortModule.blobModule = blobModule;
+      ortModule.getOnnxruntime().setBlobModule(blobModule);
+      ortModule.getOnnxruntime().checkBlobModule();
       String sessionKey = "";
 
       // test loadModel()
@@ -82,7 +83,7 @@ public class OnnxruntimeModuleTest {
 
           JavaOnlyMap options = new JavaOnlyMap();
           try {
-            ReadableMap resultMap = ortModule.loadModel(modelBuffer, options);
+            ReadableMap resultMap = ortModule.getOnnxruntime().loadModel(modelBuffer, options);
             sessionKey = resultMap.getString("key");
             ReadableArray inputNames = resultMap.getArray("inputNames");
             ReadableArray outputNames = resultMap.getArray("outputNames");
@@ -132,7 +133,7 @@ public class OnnxruntimeModuleTest {
         options.putBoolean("encodeTensorData", true);
 
         try {
-          ReadableMap resultMap = ortModule.run(sessionKey, inputDataMap, outputNames, options);
+          ReadableMap resultMap = ortModule.getOnnxruntime().run(sessionKey, inputDataMap, outputNames, options);
 
           ReadableMap outputMap = resultMap.getMap("output");
           for (int i = 0; i < 2; ++i) {
@@ -151,7 +152,7 @@ public class OnnxruntimeModuleTest {
       }
 
       // test dispose
-      ortModule.dispose(sessionKey);
+      ortModule.getOnnxruntime().dispose(sessionKey);
     } finally {
       mockSession.finishMocking();
     }
@@ -165,7 +166,8 @@ public class OnnxruntimeModuleTest {
       when(Arguments.createArray()).thenAnswer(i -> new JavaOnlyArray());
 
       OnnxruntimeModule ortModule = new OnnxruntimeModule(reactContext);
-      ortModule.blobModule = blobModule;
+      ortModule.getOnnxruntime().setBlobModule(blobModule);
+      ortModule.getOnnxruntime().checkBlobModule();
       String sessionKey = "";
 
       // test loadModel() with nnapi ep options
@@ -182,7 +184,7 @@ public class OnnxruntimeModuleTest {
         options.putArray("executionProviders", epArray);
 
         try {
-          ReadableMap resultMap = ortModule.loadModel(modelBuffer, options);
+          ReadableMap resultMap = ortModule.getOnnxruntime().loadModel(modelBuffer, options);
           sessionKey = resultMap.getString("key");
           ReadableArray inputNames = resultMap.getArray("inputNames");
           ReadableArray outputNames = resultMap.getArray("outputNames");
@@ -195,7 +197,7 @@ public class OnnxruntimeModuleTest {
           Assert.fail(e.getMessage());
         }
       }
-      ortModule.dispose(sessionKey);
+      ortModule.getOnnxruntime().dispose(sessionKey);
     } finally {
       mockSession.finishMocking();
     }
