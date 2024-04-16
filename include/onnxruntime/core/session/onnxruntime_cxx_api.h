@@ -1123,6 +1123,8 @@ struct Session : detail::SessionImpl<OrtSession> {
 
   ConstSession GetConst() const { return ConstSession{this->p_}; }
   UnownedSession GetUnowned() const { return UnownedSession{this->p_}; }
+
+  void Evict(); ///< Wraps OrtApi::EvictSession
 };
 
 namespace detail {

@@ -236,6 +236,16 @@ ExecutionProviderImpl::ExecutionProviderImpl(IDMLDevice* dmlDevice, ID3D12Device
         return std::vector<onnxruntime::AllocatorPtr>{m_allocator, m_cpuInputAllocator,};
     }
 
+    void ExecutionProviderImpl::Evict()
+    {
+        m_allocator->SetResidency(false);
+    }
+
+    void ExecutionProviderImpl::MakeResident()
+    {
+        m_allocator->SetResidency(true);
+    }
+
     HRESULT __stdcall ExecutionProviderImpl::GetD3DDevice(_COM_Outptr_ ID3D12Device** d3dDevice) const noexcept
     {
         m_d3d12Device.CopyTo(d3dDevice);
