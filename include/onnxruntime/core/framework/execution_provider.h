@@ -325,6 +325,9 @@ class IExecutionProvider {
     return InlinedVector<const Node*>();
   }
 
+  virtual common::Status MakeResident() { return Status::OK(); };
+  virtual common::Status Evict() { return Status::OK(); };
+
  private:
   const std::string type_;
 

@@ -23,7 +23,7 @@ namespace Dml
     class PooledUploadHeap;
     class ReadbackHeap;
     class ExecutionContext;
-    class BucketizedBufferAllocator;
+    class DmlBufferAllocator;
     class CPUAllocator;
     class ExecutionProvider;
 
@@ -137,7 +137,7 @@ namespace Dml
         // Allocate a resource from pools.  Releasing pooledResource returns it to the pool.
         STDMETHOD(AllocatePooledResource)(
             size_t size,
-            AllocatorRoundingMode roundingMode,
+            AllocatorPoolingMode poolingMode,
             ID3D12Resource **d3dResource,
             IUnknown* *pooledResource
         ) const noexcept final;
@@ -173,6 +173,9 @@ namespace Dml
         onnxruntime::common::Status OnSessionInitializationEnd();
         std::vector<onnxruntime::AllocatorPtr> CreatePreferredAllocators();
 
+        void Evict();
+        void MakeResident();
+
     private:
         void Initialize(ID3D12CommandQueue* queue, ExecutionProvider& executionProvider);
 
@@ -194,7 +197,7 @@ namespace Dml
         std::shared_ptr<ExecutionContext> m_context;
         std::unique_ptr<PooledUploadHeap> m_uploadHeap;
         std::unique_ptr<ReadbackHeap> m_readbackHeap;
-        std::shared_ptr<BucketizedBufferAllocator> m_allocator;
+        std::shared_ptr<DmlBufferAllocator> m_allocator;
         std::shared_ptr<CPUAllocator> m_cpuInputAllocator;
         std::shared_ptr<onnxruntime::KernelRegistry> m_kernelRegistry;
         std::shared_ptr<const Windows::AI::MachineLearning::Adapter::InternalRegistrationInfoMap> m_internalRegInfoMap;
@@ -315,6 +318,20 @@ namespace Dml
         {
             return m_impl->CreatePreferredAllocators();
         }
+
+        virtual Status MakeResident()
+        {
+            m_impl->MakeResident();
+            m_impl->WaitForOutstandingWork();
+            return Status::OK();
+        };
+
+        virtual Status Evict()
+        {
+            m_impl->WaitForOutstandingWork();
+            m_impl->Evict();
+            return Status::OK();
+        };
 
     private:
         ComPtr<ExecutionProviderImpl> m_impl;
