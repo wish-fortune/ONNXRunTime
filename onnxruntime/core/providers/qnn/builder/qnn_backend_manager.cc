@@ -285,7 +285,7 @@ Status QnnBackendManager::InitializeBackend() {
   }
 
   auto result = qnn_interface_.backendCreate(log_handle_, (const QnnBackend_Config_t**)backend_config_, &backend_handle_);
-  ORT_RETURN_IF(QNN_BACKEND_NO_ERROR != result, "Failed to initialize backend");
+  ORT_RETURN_IF(QNN_BACKEND_NO_ERROR != result, "Failed to initialize backend. Error: ", result);
 
   backend_initialized_ = true;
   return Status::OK();
@@ -304,6 +304,18 @@ Status QnnBackendManager::ShutdownBackend() {
   backend_initialized_ = false;
 
   return Status::OK();
+}
+
+bool QnnBackendManager::IsDynamicShapeSupported() {
+  if (nullptr != qnn_interface_.propertyHasCapability) {
+    auto rt = qnn_interface_.propertyHasCapability(QNN_PROPERTY_TENSOR_SUPPORT_DYNAMIC_DIMENSIONS);
+    if (QNN_PROPERTY_NOT_SUPPORTED == rt || QNN_PROPERTY_ERROR_UNKNOWN_KEY == rt) {
+      LOGS_DEFAULT(INFO) << "Dynamic shape not supported or unknown to backend.";
+      return false;
+    }
+  }
+
+  return true;
 }
 
 bool QnnBackendManager::IsDevicePropertySupported() {
