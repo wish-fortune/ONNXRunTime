@@ -176,6 +176,12 @@ class CUDA_MS_OP_TYPED_CLASS_NAME(1, BFloat16, SparseAttention);
 class ONNX_OPERATOR_KERNEL_CLASS_NAME(kCudaExecutionProvider, kPytorchAtenDomain, 1, ATen);
 #endif
 
+#ifdef USE_TRITON_KERNEL
+class CUDA_MS_OP_TYPED_CLASS_NAME(1, float, MyTritonKernel);
+class CUDA_MS_OP_TYPED_CLASS_NAME(1, MLFloat16, MyTritonKernel);
+#endif
+
+
 #ifdef ENABLE_TRAINING_OPS
 // Should remove the shrunken_gather include from ENABLE_TRAINING_OPS once
 // 1). compute optimizer is enabled for inference or
@@ -384,6 +390,11 @@ Status RegisterCudaContribKernels(KernelRegistry& kernel_registry) {
 
 #ifdef ENABLE_ATEN
     BuildKernelCreateInfo<ONNX_OPERATOR_KERNEL_CLASS_NAME(kCudaExecutionProvider, kPytorchAtenDomain, 1, ATen)>,
+#endif
+
+#ifdef USE_TRITON_KERNEL
+    BuildKernelCreateInfo<CUDA_MS_OP_TYPED_CLASS_NAME(1, float, MyTritonKernel)>,
+    BuildKernelCreateInfo<CUDA_MS_OP_TYPED_CLASS_NAME(1, MLFloat16, MyTritonKernel)>,
 #endif
 
 #ifdef ENABLE_TRAINING_OPS

@@ -3564,6 +3564,31 @@ MatMulBnb4 is a MatMul with weight quantized with 4 bits using either FP4 or NF4
                       "Allow inputs and outputs to be any kind of tensor.");
 #endif
 
+#ifdef USE_TRITON_KERNEL
+  ONNX_CONTRIB_OPERATOR_SCHEMA(MyTritonKernel)
+      .SetDomain(kMSDomain)
+      .SinceVersion(1)
+      .SetSupportLevel(OpSchema::SupportType::EXPERIMENTAL)
+      .SetDoc("MyTritonKernel")
+      .Attr("input_size",
+            "The number of elements in the input vector",
+            AttributeProto::INT, static_cast<int64_t>(128))
+      .Attr("block_size",
+            "Kernel block size",
+            AttributeProto::INT, static_cast<int64_t>(64))
+      .Input(0, "X", "Input data tensor", "T")
+      .Output(0, "Y", "Output data tensor.", "T")
+      .TypeConstraint(
+          "T",
+          {"tensor(float16)", "tensor(float)"},
+          "Constrain input X type to float tensors.")
+      .TypeAndShapeInferenceFunction([](ONNX_NAMESPACE::InferenceContext& ctx) {
+        propagateElemTypeFromInputToOutput(ctx, 0, 0);
+        propagateShapeFromInputToOutput(ctx, 0, 0);
+      });
+#endif
+
+
 #ifdef ENABLE_TRAINING_OPS
   // Should remove the shrunken_gather include from ENABLE_TRAINING_OPS once 1). compute optimizer is enabled for inference or
   // 2). this is needed by inference for other purpose.

@@ -10,6 +10,19 @@ if(onnxruntime_USE_ROCM)
       "onnxruntime/contrib_ops/rocm/diffusion/group_norm_triton.py"
   )
 endif()
+if(onnxruntime_USE_CUDA)
+  set(triton_kernel_scripts
+      "onnxruntime/contrib_ops/cuda/my_triton_kernel.py"
+  )
+endif()
+
+
+set(requirements_file "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci_build/compile_triton_requirements.txt")
+
+add_custom_target(install_python_dependencies ALL
+  COMMAND ${Python3_EXECUTABLE} -m pip install -r ${requirements_file}
+  COMMENT "Installing Python dependencies from ${requirements_file}"
+)
 
 function(compile_triton_kernel out_triton_kernel_obj_file out_triton_kernel_header_dir)
   # compile triton kernel, generate .a and .h files
@@ -33,3 +46,5 @@ function(compile_triton_kernel out_triton_kernel_obj_file out_triton_kernel_head
   set(${out_triton_kernel_obj_file} ${out_obj_file} PARENT_SCOPE)
   set(${out_triton_kernel_header_dir} ${out_dir} PARENT_SCOPE)
 endfunction()
+
+add_dependencies(onnxruntime_triton_kernel install_python_dependencies)
