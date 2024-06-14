@@ -59,6 +59,9 @@ static SessionOptions SESSION_OPTION = {
     {},  // external_initializers
     {},  // external_initializer_files
 #endif
+#if !defined(ORT_MINIMAL_BUILD)
+    {},  // tensor_partition_specs
+#endif
     nullptr,  // custom_create_thread_fn
     nullptr,  // custom_thread_creation_options
     nullptr,  // custom_join_thread_fn

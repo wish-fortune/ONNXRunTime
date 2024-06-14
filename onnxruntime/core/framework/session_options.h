@@ -19,6 +19,10 @@
 #include "core/framework/library_handles.h"
 #endif
 
+#if !defined(ORT_MINIMAL_BUILD)
+#include "core/framework/sharding_spec.h"
+#endif
+
 namespace onnxruntime {
 
 enum class ExecutionOrder {
@@ -162,6 +166,15 @@ struct SessionOptions {
   InlinedHashMap<PathString, std::pair<char*, size_t>> external_initializer_files_mmap;
   Status AddExternalInitializersFromFilesInMemory(gsl::span<const PathString> file_names,
                                                   gsl::span<std::pair<char*, const size_t>> files_buffers);
+#endif
+#if !defined(ORT_MINIMAL_BUILD)
+  // TODO: use InlinedHashMap<std::string, TensorPartitionSpec> tensor_partition_specs;
+  std::unordered_map<std::string, distributed::TensorPartitionSpec> tensor_partition_specs;
+  Status AddTensorPartitionSpec(
+      const std::string& name,
+      const std::string& spec,
+      const std::vector<int64_t>& device_mesh_shape,
+      const std::vector<int64_t>& device_mesh_elements);
 #endif
 
   // custom function callback to create a thread
