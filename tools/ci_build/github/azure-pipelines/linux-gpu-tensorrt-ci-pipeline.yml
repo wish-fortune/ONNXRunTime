@@ -34,18 +34,25 @@ parameters:
     values:
       - 11.8
       - 12.2
+  - name: OverwriteTrtVersion
+    displayName: (Optional) overwrite TRT pkg i.e "10.2.0.19-1.cuda12.5" with CUDA 12 selected above
+    type: string
+    default: 'Null'
 
 variables:
+  - template: templates/common-variables.yml
   - name: docker_base_image
     ${{ if eq(parameters.CudaVersion, '11.8') }}:
       value: onnxruntimebuildcache.azurecr.io/internal/azureml/onnxruntime/build/cuda11_x64_almalinux8_gcc11:20240531.1
     ${{ if eq(parameters.CudaVersion, '12.2') }}:
       value: onnxruntimebuildcache.azurecr.io/internal/azureml/onnxruntime/build/cuda12_x64_ubi8_gcc12:20240610.1
   - name: linux_trt_version
-    ${{ if eq(parameters.CudaVersion, '11.8') }}:
-      value: 10.0.1.6-1.cuda11.8
-    ${{ if eq(parameters.CudaVersion, '12.2') }}:
-      value: 10.0.1.6-1.cuda12.4
+    ${{ if ne(parameters.OverwriteTrtVersion, 'Null') }}:
+      value: ${{ parameters.OverwriteTrtVersion }}
+    ${{ if and(eq(parameters.OverwriteTrtVersion, 'Null'), eq(parameters.CudaVersion, '11.8')) }}:
+      value: ${{ variables.linux_trt_version_cuda11 }}
+    ${{ if and(eq(parameters.OverwriteTrtVersion, 'Null'), eq(parameters.CudaVersion, '12.2')) }}:
+      value: ${{ variables.linux_trt_version_cuda12 }}
 
 jobs:
 - job: Linux_Build
