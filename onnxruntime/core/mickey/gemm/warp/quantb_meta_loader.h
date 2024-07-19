@@ -47,10 +47,9 @@ void weightsMinuEight2Half(uint32_t const &weights,
   //
   // 1.125 instruction per weight, 9 instructions in total.
 
+#if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 500))
   uint32_t*      b32s   = reinterpret_cast<uint32_t*>(dest.data());
   const uint32_t high_8s = weights >> 8;
-
-#if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 500))
   asm volatile(
     "  lop3.b32      %0, %4, 0x000f000f, %6, 0xea;\n"
     "  lop3.b32      %1, %4, 0x00f000f0, %7, 0xea;\n"
@@ -67,6 +66,8 @@ void weightsMinuEight2Half(uint32_t const &weights,
       "r"(0x64086408));
 #else
   assert(false);
+  (void)(weights);
+  (void)(dest);
 #endif
 }
 
@@ -75,7 +76,7 @@ void weightsMinuEight2Half(uint32_t const &weights,
 */
 CUTLASS_DEVICE
 void weights2Half([[maybe_unused]] uint32_t const &weights,
-                  cutlass::Array<cutlass::half_t, 8>& dest)
+                  [[maybe_unused]] cutlass::Array<cutlass::half_t, 8>& dest)
 {
   // 4b weights are arranged as [0, 2, 4, 6, 1, 3, 5, 7], so that adjacent
   // weights are in adjacent 16b half words.
@@ -96,10 +97,10 @@ void weights2Half([[maybe_unused]] uint32_t const &weights,
   //
   // 1.125 instruction per weight, 9 instructions in total.
 
+#if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 500))
   uint32_t*      b32s   = reinterpret_cast<uint32_t*>(dest.data());
   const uint32_t high_8s = weights >> 8;
 
-#if (defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 500))
   asm volatile(
     "  lop3.b32      %0, %4, 0x000f000f, %6, 0xea;\n"
     "  lop3.b32      %1, %4, 0x00f000f0, %7, 0xea;\n"
@@ -331,6 +332,7 @@ struct QuantBScaleLoader<cutlass::MatrixShape<block_size_, 1>, WarpShape_, Eleme
     // only one scale/offset, so the block size cannot be smaller than 16.
     static_assert(QuantBlocking::kRow % 16 == 0);
 
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
     const int meta_k = k_iter / (QuantBlocking::kRow / 16);
     half const* scales = reinterpret_cast<half const*>(frag_scales.data() + meta_k * kMetaFragSize);
     [[maybe_unused]] half const* offsets = nullptr;
@@ -391,6 +393,14 @@ struct QuantBScaleLoader<cutlass::MatrixShape<block_size_, 1>, WarpShape_, Eleme
         }
       }
     }
+#else
+    assert(false);
+    (void)(k_iter);
+    (void)(frag_pack_b);
+    (void)(frag_scales);
+    (void)(frag_offsets);
+    (void)(frag_b);
+#endif  // __CUDA_ARCH__
   }
 
 };
@@ -546,7 +556,8 @@ struct QuantBScaleLoader<cutlass::MatrixShape<1, block_size_>, WarpShape_, Eleme
   CUTLASS_DEVICE
   static void load_fragment(const int lane_idx,
       FragmentScales &frag_scales, const ElementT* smem,
-      FragmentOffsets &frag_offsets, const OffsetT* offset_smem) {
+      [[maybe_unused]] FragmentOffsets &frag_offsets,
+      [[maybe_unused]] const OffsetT* offset_smem) {
     // Row-wise quantization, every row has its own scale/offset, elements have been rearraged
     // such that we can load two tile at a time.
     // T0        T0
@@ -570,6 +581,7 @@ struct QuantBScaleLoader<cutlass::MatrixShape<1, block_size_>, WarpShape_, Eleme
       frag_ptr[0] = scales_ptr[0];
       frag_ptr[1] = scales_ptr[1];
       scales_ptr += 8;
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
       if constexpr(has_offsets) {
         // offsets are always 4 a group, this give us an opportunity to use
         // a little trick to reduce the number of instructions.
@@ -590,6 +602,7 @@ struct QuantBScaleLoader<cutlass::MatrixShape<1, block_size_>, WarpShape_, Eleme
         }
         offsets_ptr += 4;
       }
+#endif
     }
   }
 
@@ -611,6 +624,7 @@ struct QuantBScaleLoader<cutlass::MatrixShape<1, block_size_>, WarpShape_, Eleme
     constexpr int kPackedBKStride = PackedBSize / kPackedBNTiles;
     static_assert(kPackedBKStride * kPackedBNTiles == PackedBSize);
 
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
     // Row-wise quantization, every row has its own scale/offset
     CUTLASS_PRAGMA_UNROLL
     for (int nn = 0; nn < (WarpShape::kN / 16); ++nn) {
@@ -680,6 +694,14 @@ struct QuantBScaleLoader<cutlass::MatrixShape<1, block_size_>, WarpShape_, Eleme
         }
       }
     }
+#else
+    assert(false);
+    (void)(k_iter);
+    (void)(frag_pack_b);
+    (void)(frag_scales);
+    (void)(frag_offsets);
+    (void)(frag_b);
+#endif  // __CUDA_ARCH__
   }
 
 };
