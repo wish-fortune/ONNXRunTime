@@ -198,6 +198,7 @@ static const InlinedHashMap<std::string, WebnnOpInfo> op_map = {
     {"LessOrEqual", {"lesserOrEqual", true}},
     {"Log", {"log", true}},
     {"LpPool", {"l2Pool2d", false}},
+    {"LSTM", {"lstm", true}},
     {"MatMul", {"matmul", true}},
     {"MatMulInteger", {"matmulInteger", false}},
     {"Max", {"max", true}},
