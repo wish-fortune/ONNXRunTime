@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-import { Backend, InferenceSession, InferenceSessionHandler, SessionHandler } from 'onnxruntime-common';
+import { Backend, env, InferenceSession, InferenceSessionHandler, SessionHandler } from 'onnxruntime-common';
 
 import { Binding, binding } from './binding';
+import { configureLogger } from './log';
 
 class OnnxruntimeSessionHandler implements InferenceSessionHandler {
   #inferenceSession: Binding.InferenceSession;
@@ -53,6 +54,7 @@ class OnnxruntimeSessionHandler implements InferenceSessionHandler {
 
 class OnnxruntimeBackend implements Backend {
   async init(): Promise<void> {
+    configureLogger(env.logLevel!, !!env.debug);
     return Promise.resolve();
   }
 
