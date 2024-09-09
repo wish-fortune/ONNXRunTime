@@ -19,6 +19,7 @@ Abstract:
 #include "sqnbitgemm_q8_block.h"
 
 #include <cassert>
+#include <iostream> // Include this header for std::cerr
 
 namespace
 {
@@ -262,6 +263,44 @@ MlasSQNBitGemmPackQuantBData(
                 ThreadPool
             );
             return;
+        }
+    }
+}
+
+void MLASCALL
+ConvertFp16ToFp32(const MLAS_FP16* src_fp16, float* dst_fp32, uint64_t size)
+{
+    const auto* Dispatch = GetMlasPlatform().SQNBitGemmDispatch;
+    if (Dispatch != nullptr && Dispatch->ConvertFp16ToFp32 != nullptr) {
+        Dispatch->ConvertFp16ToFp32(src_fp16, dst_fp32, size);
+        return;
+    } else {
+        static bool warning_issued = false;
+        if (!warning_issued) {
+            warning_issued = true;
+            std::cerr << "Warning: ConvertFp16ToFp32 is slow without MLAS support for this target." << std::endl;
+        }
+        for (size_t i = 0; i < size; ++i) {
+            dst_fp32[i] = src_fp16[i].ToFloat();
+        }
+    }
+}
+
+void MLASCALL
+ConvertFp32ToFp16(const float* src_fp32, MLAS_FP16* dst_fp16, uint64_t size)
+{
+    const auto* Dispatch = GetMlasPlatform().SQNBitGemmDispatch;
+    if (Dispatch != nullptr && Dispatch->ConvertFp32ToFp16 != nullptr) {
+        Dispatch->ConvertFp32ToFp16(src_fp32, dst_fp16, size);
+        return;
+    } else {
+        static bool warning_issued = false;
+        if (!warning_issued) {
+            warning_issued = true;
+            std::cerr << "Warning: ConvertFp32ToFp16 is slow without MLAS support for this target." << std::endl;
+        }
+        for (size_t i = 0; i < size; ++i) {
+            dst_fp16[i] = MLAS_FP16(src_fp32[i]);
         }
     }
 }
