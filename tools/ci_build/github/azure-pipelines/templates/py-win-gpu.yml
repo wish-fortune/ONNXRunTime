@@ -62,6 +62,7 @@ stages:
         clean: all
       pool:
         name: onnxruntime-Win-CPU-2022
+        os: windows
       variables:
         GRADLE_OPTS: '-Dorg.gradle.daemon=false'
         VSGenerator: 'Visual Studio 17 2022'

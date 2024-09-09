@@ -129,7 +129,7 @@ extends:
           outputs:
           - output: pipelineArtifact
             targetPath: $(Build.ArtifactStagingDirectory)
-            artifactName: win_cpu_wheel
+            artifactName: win_cpu_wheel_$(PythonVersion)_$(buildArch)
         # Define the steps that the pipeline will run.
         # In most cases, copy and paste the steps from the original pipeline.
         timeoutInMinutes: 180
@@ -245,3 +245,104 @@ extends:
         - task: mspremier.PostBuildCleanup.PostBuildCleanup-task.PostBuildCleanup@3
           displayName: 'Clean Agent Directories'
           condition: always()
+
+
+    - template: /tools/ci_build/github/azure-pipelines/templates/py-win-gpu.yml@self
+      parameters:
+        MACHINE_POOL: 'onnxruntime-Win2022-GPU-A10'
+        PYTHON_VERSION: '3.8'
+        EP_BUILD_FLAGS: --use_tensorrt --tensorrt_home="$(Agent.TempDirectory)\TensorRT-10.2.0.19.Windows10.x86_64.cuda-11.8" --cuda_home="$(Agent.TempDirectory)\v11.8"  --cmake_extra_defines "CMAKE_CUDA_ARCHITECTURES=52;60;61;70;75;80"
+        ENV_SETUP_SCRIPT: setup_env_gpu.bat
+        EP_NAME: gpu
+        publish_symbols: ${{ parameters.publish_symbols }}
+        cmake_build_type: ${{ parameters.cmake_build_type }}
+
+    - template: /tools/ci_build/github/azure-pipelines/templates/py-win-gpu.yml@self
+      parameters:
+        MACHINE_POOL: 'onnxruntime-Win2022-GPU-A10'
+        PYTHON_VERSION: '3.9'
+        EP_BUILD_FLAGS: --use_tensorrt --tensorrt_home="$(Agent.TempDirectory)\TensorRT-10.2.0.19.Windows10.x86_64.cuda-11.8" --cuda_home="$(Agent.TempDirectory)\v11.8"  --cmake_extra_defines "CMAKE_CUDA_ARCHITECTURES=52;60;61;70;75;80"
+        ENV_SETUP_SCRIPT: setup_env_gpu.bat
+        EP_NAME: gpu
+        publish_symbols: ${{ parameters.publish_symbols }}
+        cmake_build_type: ${{ parameters.cmake_build_type }}
+
+    - template: /tools/ci_build/github/azure-pipelines/templates/py-win-gpu.yml@self
+      parameters:
+        MACHINE_POOL: 'onnxruntime-Win2022-GPU-A10'
+        PYTHON_VERSION: '3.10'
+        EP_BUILD_FLAGS: --use_tensorrt --tensorrt_home="$(Agent.TempDirectory)\TensorRT-10.2.0.19.Windows10.x86_64.cuda-11.8" --cuda_home="$(Agent.TempDirectory)\v11.8"  --cmake_extra_defines "CMAKE_CUDA_ARCHITECTURES=52;60;61;70;75;80"
+        ENV_SETUP_SCRIPT: setup_env_gpu.bat
+        EP_NAME: gpu
+        publish_symbols: ${{ parameters.publish_symbols }}
+        cmake_build_type: ${{ parameters.cmake_build_type }}
+
+    - template: /tools/ci_build/github/azure-pipelines/templates/py-win-gpu.yml@self
+      parameters:
+        MACHINE_POOL: 'onnxruntime-Win2022-GPU-A10'
+        PYTHON_VERSION: '3.11'
+        EP_BUILD_FLAGS: --use_tensorrt --tensorrt_home="$(Agent.TempDirectory)\TensorRT-10.2.0.19.Windows10.x86_64.cuda-11.8" --cuda_home="$(Agent.TempDirectory)\v11.8"  --cmake_extra_defines "CMAKE_CUDA_ARCHITECTURES=52;60;61;70;75;80"
+        ENV_SETUP_SCRIPT: setup_env_gpu.bat
+        EP_NAME: gpu
+        publish_symbols: ${{ parameters.publish_symbols }}
+        cmake_build_type: ${{ parameters.cmake_build_type }}
+
+    - template: /tools/ci_build/github/azure-pipelines/templates/py-win-gpu.yml@self
+      parameters:
+        MACHINE_POOL: 'onnxruntime-Win2022-GPU-A10'
+        PYTHON_VERSION: '3.12'
+        EP_BUILD_FLAGS: --use_tensorrt --tensorrt_home="$(Agent.TempDirectory)\TensorRT-10.2.0.19.Windows10.x86_64.cuda-11.8" --cuda_home="$(Agent.TempDirectory)\v11.8"  --cmake_extra_defines "CMAKE_CUDA_ARCHITECTURES=52;60;61;70;75;80"
+        ENV_SETUP_SCRIPT: setup_env_gpu.bat
+        EP_NAME: gpu
+        publish_symbols: ${{ parameters.publish_symbols }}
+        cmake_build_type: ${{ parameters.cmake_build_type }}
+
+    - template: /tools/ci_build/github/azure-pipelines/templates/py-win-gpu.yml@self
+      parameters:
+        MACHINE_POOL: 'onnxruntime-Win2022-GPU-dml-A10'
+        PYTHON_VERSION: '3.8'
+        EP_BUILD_FLAGS: --use_dml --cmake_extra_defines CMAKE_SYSTEM_VERSION=10.0.18362.0 --enable_wcos
+        ENV_SETUP_SCRIPT: setup_env.bat
+        EP_NAME: directml
+        publish_symbols: ${{ parameters.publish_symbols }}
+        cmake_build_type: ${{ parameters.cmake_build_type }}
+
+    - template: /tools/ci_build/github/azure-pipelines/templates/py-win-gpu.yml@self
+      parameters:
+        MACHINE_POOL: 'onnxruntime-Win2022-GPU-dml-A10'
+        PYTHON_VERSION: '3.9'
+        EP_BUILD_FLAGS: --use_dml --cmake_extra_defines CMAKE_SYSTEM_VERSION=10.0.18362.0 --enable_wcos
+        ENV_SETUP_SCRIPT: setup_env.bat
+        EP_NAME: directml
+        publish_symbols: ${{ parameters.publish_symbols }}
+        cmake_build_type: ${{ parameters.cmake_build_type }}
+
+    - template: /tools/ci_build/github/azure-pipelines/templates/py-win-gpu.yml@self
+      parameters:
+        MACHINE_POOL: 'onnxruntime-Win2022-GPU-dml-A10'
+        PYTHON_VERSION: '3.10'
+        EP_BUILD_FLAGS: --use_dml --cmake_extra_defines CMAKE_SYSTEM_VERSION=10.0.18362.0 --enable_wcos
+        ENV_SETUP_SCRIPT: setup_env.bat
+        EP_NAME: directml
+        publish_symbols: ${{ parameters.publish_symbols }}
+        cmake_build_type: ${{ parameters.cmake_build_type }}
+
+    - template: /tools/ci_build/github/azure-pipelines/templates/py-win-gpu.yml@self
+      parameters:
+        MACHINE_POOL: 'onnxruntime-Win2022-GPU-dml-A10'
+        PYTHON_VERSION: '3.11'
+        EP_BUILD_FLAGS: --use_dml --cmake_extra_defines CMAKE_SYSTEM_VERSION=10.0.18362.0 --enable_wcos
+        ENV_SETUP_SCRIPT: setup_env.bat
+        EP_NAME: directml
+        publish_symbols: ${{ parameters.publish_symbols }}
+        cmake_build_type: ${{ parameters.cmake_build_type }}
+
+    - template: /tools/ci_build/github/azure-pipelines/templates/py-win-gpu.yml@self
+      parameters:
+        MACHINE_POOL: 'onnxruntime-Win2022-GPU-dml-A10'
+        PYTHON_VERSION: '3.12'
+        EP_BUILD_FLAGS: --use_dml --cmake_extra_defines CMAKE_SYSTEM_VERSION=10.0.18362.0 --enable_wcos
+        ENV_SETUP_SCRIPT: setup_env.bat
+        EP_NAME: directml
+        publish_symbols: ${{ parameters.publish_symbols }}
+        cmake_build_type: ${{ parameters.cmake_build_type }}
