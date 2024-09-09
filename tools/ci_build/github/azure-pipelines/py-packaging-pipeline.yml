@@ -117,6 +117,15 @@ extends:
         # If the pipeline publishes artifacts, use `templateContext` to define the artifacts.
         # This will enable 1ES PT to run SDL analysis tools on the artifacts and then upload them.
         templateContext:
+          codeSignValidation:
+            enabled: true
+            break: true
+          psscriptanalyzer:
+            enabled: true
+          sdl:
+            binskim:
+              enabled: true
+              targetPathPattern: '+:file|$(Build.ArtifactStagingDirectory)\**\*.pyd;+:file|$(Build.ArtifactStagingDirectory)\**\*.dll;-:file|$(Build.ArtifactStagingDirectory)\**\DirectML.dll'
           outputs:
           - output: pipelineArtifact
             targetPath: $(Build.ArtifactStagingDirectory)
@@ -221,23 +230,13 @@ extends:
           workingDirectory: '$(Build.ArtifactStagingDirectory)'
           displayName: 'unzip the package'
 
-        - task: BinSkim@4
-          displayName: 'Run BinSkim'
-          inputs:
-            AnalyzeTargetGlob: '+:file|$(Build.ArtifactStagingDirectory)\**\*.dll;-:file|$(Build.ArtifactStagingDirectory)\**\DirectML.dll'
-          continueOnError: true
-
         - powershell: |
            python -m pip uninstall -y ort-nightly-gpu ort-nightly onnxruntime onnxruntime-gpu -qq
            Get-ChildItem -Path $(Build.ArtifactStagingDirectory)/*.whl | foreach {pip --disable-pip-version-check install --upgrade $_.fullname tabulate}
            Remove-Item -Recurse -Force onnxruntime
-           if ("$(ExtraParam)" -contains "--use_azure") {
-             $env:path="$(Build.BinariesDirectory)\${{ parameters.cmake_build_type }}\_deps\vcpkg-src\installed\x64-windows\bin;$(Build.BinariesDirectory)\${{ parameters.cmake_build_type }}\_deps\vcpkg-src\installed\x86-windows\bin;$env:path"
-             python onnxruntime_test_python_azure.py
-           }
            python onnx_backend_test_series.py
           workingDirectory: '$(Build.BinariesDirectory)\${{ parameters.cmake_build_type }}\${{ parameters.cmake_build_type }}'
-          displayName: 'Run Python Tests' 
+          displayName: 'Run ONNX Backend Tests' 
 
         - template: /tools/ci_build/github/azure-pipelines/templates/component-governance-component-detection-steps.yml@self
           parameters:
