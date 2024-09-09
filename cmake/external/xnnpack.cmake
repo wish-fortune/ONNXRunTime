@@ -30,6 +30,13 @@ set(FXDIV_SOURCE_DIR ${fxdiv_SOURCE_DIR})
 FetchContent_Declare(pthreadpool URL ${DEP_URL_pthreadpool} URL_HASH SHA1=${DEP_SHA1_pthreadpool})
 onnxruntime_fetchcontent_makeavailable(pthreadpool)
 
+# https://github.com/google/XNNPACK/blob/3b3f7b8a6668f6ab3b6ce33b9f1d1fce971549d1/CMakeLists.txt#L206C82-L206C117
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^arm64.*" AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+  FetchContent_Declare(kleidiai URL ${DEP_URL_kleidiai} URL_HASH SHA1=${DEP_SHA1_kleidiai})
+  onnxruntime_fetchcontent_makeavailable(kleidiai)
+endif()
+
+
 FetchContent_Declare(googlexnnpack URL ${DEP_URL_googlexnnpack} URL_HASH SHA1=${DEP_SHA1_googlexnnpack}
                      PATCH_COMMAND ${Patch_EXECUTABLE} --binary --ignore-whitespace -p1 < ${PROJECT_SOURCE_DIR}/patches/xnnpack/AddEmscriptenAndIosSupport.patch
                     )
@@ -38,7 +45,9 @@ set(XNNPACK_DIR ${googlexnnpack_SOURCE_DIR})
 set(XNNPACK_INCLUDE_DIR ${XNNPACK_DIR}/include)
 
 set(onnxruntime_EXTERNAL_LIBRARIES_XNNPACK XNNPACK pthreadpool)
-
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^arm64.*" AND NOT CMAKE_C_COMPILER_ID STREQUAL "MSVC")
+  list(APPEND onnxruntime_EXTERNAL_LIBRARIES_XNNPACK kleidiai)
+endif()
 
 # the XNNPACK CMake setup doesn't include the WASM kernels so we have to manually set those up
 if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
