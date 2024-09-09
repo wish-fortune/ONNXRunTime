@@ -132,7 +132,7 @@ extends:
           clean: true
           submodules: recursive
 
-        - template: templates/telemetry-steps.yml
+        - template: templates/telemetry-steps.yml@self
 
         - task: UsePythonVersion@0
           inputs:
@@ -140,7 +140,7 @@ extends:
             addToPath: true
             architecture: $(buildArch)
 
-        - template: set-nightly-build-option-variable-step.yml
+        - template: templates/set-nightly-build-option-variable-step.yml@self
 
         - task: BatchScript@1
           displayName: 'setup env'
@@ -149,7 +149,7 @@ extends:
             modifyEnvironment: true
             workingFolder: '$(Build.BinariesDirectory)'
 
-        - template: templates/download-deps.yml
+        - template: templates/download-deps.yml@self
 
         - task: PythonScript@0
           displayName: 'Update deps.txt'
@@ -195,7 +195,7 @@ extends:
             createLogFile: true
 
         # Esrp signing
-        - template: win-esrp-dll.yml
+        - template: templates/win-esrp-dll.yml@self
           parameters:
             FolderPath: '$(Build.BinariesDirectory)\${{ parameters.cmake_build_type }}\${{ parameters.cmake_build_type }}\onnxruntime\capi'
             DisplayName: 'ESRP - Sign Native dlls'
@@ -250,7 +250,7 @@ extends:
           workingDirectory: '$(Build.BinariesDirectory)\${{ parameters.cmake_build_type }}\${{ parameters.cmake_build_type }}'
           displayName: 'Run Python Tests' 
 
-        - template: component-governance-component-detection-steps.yml
+        - template: templates/component-governance-component-detection-steps.yml@self
           parameters:
             condition: 'succeeded'
 
