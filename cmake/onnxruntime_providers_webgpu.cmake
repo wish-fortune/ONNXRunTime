@@ -34,4 +34,15 @@
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:dawn::webgpu_dawn>" "$<TARGET_FILE_DIR:onnxruntime_providers_webgpu>"
     VERBATIM )
 
+  # # Copy dxcompiler.dll and dxil.dll to the output directory
+  # # this is only needed for Windows build
+  # if (WIN32)
+  #   add_custom_command(
+  #     TARGET onnxruntime_providers_webgpu
+  #     POST_BUILD
+  #     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:dawn::dxcompiler>" "$<TARGET_FILE_DIR:onnxruntime_providers_webgpu>"
+  #     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:dawn::dxil>" "$<TARGET_FILE_DIR:onnxruntime_providers_webgpu>"
+  #     VERBATIM )
+  # endif()
+
   set_target_properties(onnxruntime_providers_webgpu PROPERTIES FOLDER "ONNXRuntime")
