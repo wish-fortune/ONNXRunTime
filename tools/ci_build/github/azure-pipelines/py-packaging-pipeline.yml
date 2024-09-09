@@ -248,22 +248,7 @@ extends:
            }
            python onnx_backend_test_series.py
           workingDirectory: '$(Build.BinariesDirectory)\${{ parameters.cmake_build_type }}\${{ parameters.cmake_build_type }}'
-          displayName: 'Run Python Tests'
-        - ${{ if eq(parameters.publish_symbols, true) }}:
-          - task: PublishSymbols@2
-            displayName: 'Publish symbols'
-            condition: and (succeeded(), or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), startsWith(variables['Build.SourceBranch'], 'refs/heads/rel-')))
-            inputs:
-              SymbolsFolder: '$(Build.BinariesDirectory)\${{ parameters.cmake_build_type }}\${{ parameters.cmake_build_type }}'
-              SearchPattern: |
-               onnxruntime_pybind11_state.pdb
-               onnxruntime_providers_shared.pdb
-              IndexSources: true
-              SymbolServerType: TeamServices
-              SymbolExpirationInDays: 3650
-              SymbolsArtifactName: 'win_cpu_$(PythonVersion)_$(buildArch)_$(Build.BuildNumber)'
- 
- 
+          displayName: 'Run Python Tests' 
 
         - template: component-governance-component-detection-steps.yml
           parameters:
