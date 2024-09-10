@@ -21,7 +21,10 @@
 #include "core/common/status.h"
 #include "core/common/safeint.h"
 #include "core/graph/constants.h"
+#include "core/graph/model.h"
 #include "core/graph/graph.h"
+#include "core/graph/graph_proto_serializer.h"
+#include "core/graph/graph_viewer.h"
 #include "core/framework/allocator.h"
 #include "core/framework/tensor.h"
 #include "core/framework/ort_value.h"
@@ -38,6 +41,9 @@
 #include "core/framework/TensorSeq.h"
 #include "core/platform/ort_mutex.h"
 #include "core/common/string_helper.h"
+#include "core/framework/provider_factory_adapter.h"
+#include "core/framework/kernel_registry.h"
+#include "core/framework/ort_type_constraints.h"
 
 #ifdef USE_CUDA
 #include "core/providers/cuda/cuda_provider_factory.h"
@@ -94,6 +100,8 @@ using onnxruntime::common::Status;
 
 using namespace onnxruntime;
 
+typedef std::unordered_map<std::string, std::string> ModelMetaData;
+
 #ifndef ORT_STATUS_PTR
 #ifdef _WIN32
 #define ORT_STATUS_PTR _Check_return_ _Ret_maybenull_ OrtStatusPtr
@@ -111,6 +119,9 @@ using namespace onnxruntime;
   API_IMPL_BEGIN                   \
   auto v = (value);                \
   auto tensor = v->GetMutable<onnxruntime::Tensor>();
+
+// TODO(leca): try: namespace onnxruntime { KernelCreateInfo CreateKernelCreateInfo2(..); }, then define this function inside onnxruntime namespace
+KernelCreateInfo CreateKernelCreateInfo2(const std::string& domain, const OrtCustomOp* op, OrtTypeConstraints* type_constraints);
 
 ORT_API_STATUS_IMPL(OrtApis::CreateEnvWithCustomLogger, OrtLoggingFunction logging_function,
                     _In_opt_ void* logger_param, OrtLoggingLevel logging_level, _In_ const char* logid,
@@ -2353,6 +2364,356 @@ ORT_API(const OrtTrainingApi*, OrtApis::GetTrainingApi, uint32_t version) {
 #endif
 }
 
+ORT_API_STATUS_IMPL(OrtApis::CreateDevice, _In_ enum OrtMemoryInfoDeviceType device_type, _In_ enum OrtMemoryType memory_type, _In_ int16_t device_id, _Outptr_ const OrtDevice** out) {
+  OrtDevice::DeviceType dt = static_cast<int8_t>(device_type);
+  OrtDevice::MemoryType mt = static_cast<int8_t>(memory_type);
+  std::unique_ptr<OrtDevice> device = std::make_unique<OrtDevice>(dt, mt, device_id);
+  *out = device.release();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::DeviceGetDeviceType, _In_ const OrtDevice* device, _Out_ OrtMemoryInfoDeviceType* out) {
+  *out = static_cast<OrtMemoryInfoDeviceType>(device->Type());
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::DeviceGetMemoryType, _In_ const OrtDevice* device, _Out_ OrtMemoryType* out) {
+  *out = static_cast<OrtMemoryType>(device->MemType());
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::DeviceGetDeviceId, _In_ const OrtDevice* device, _Out_ int16_t* out) {
+  *out = device->Id();
+  return nullptr;
+}
+
+ORT_API(void, OrtApis::ReleaseDevice, OrtDevice* device) {
+  delete device;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::RegisterOrtExecutionProviderLibrary, _In_ const char* lib_path, _In_ OrtEnv* env, _In_ const char* ep_name) {
+  API_IMPL_BEGIN
+  void* handle = nullptr;
+  ORT_THROW_IF_ERROR(Env::Default().LoadDynamicLibrary(ToPathString(lib_path), false, &handle));
+  if (handle) {
+    OrtExecutionProviderFactory* (*symbol)();
+    ORT_THROW_IF_ERROR(Env::Default().GetSymbolFromLibrary(handle, "RegisterCustomEp", (void**)&symbol));
+    env->InsertCustomEp(ep_name, symbol());
+    return nullptr;
+  }
+  return CreateStatus(ORT_RUNTIME_EXCEPTION, "cannot load the shared library for out-tree EP");
+  API_IMPL_END
+}
+
+ORT_API_STATUS_IMPL(OrtApis::SessionOptionsAppendOrtExecutionProvider, _In_ OrtSessionOptions* options, _In_ const char* ep_name, _In_ OrtEnv* env,
+                    _In_reads_(num_keys) const char* const* provider_options_keys, _In_reads_(num_keys) const char* const* provider_options_values, _In_ size_t num_keys) {
+  OrtExecutionProviderFactory* ep_factory = env->GetOrtExecutionProviderFactory(ep_name);
+  if (ep_factory) {
+    std::shared_ptr<ExecutionProviderFactoryAdapter> factory = std::make_shared<ExecutionProviderFactoryAdapter>(ep_factory, provider_options_keys, provider_options_values, num_keys);
+    options->provider_factories.push_back(std::move(factory));
+  }
+  return nullptr;
+}
+
+ORT_API(const char*, OrtApis::OrtGraph_GetName, const OrtGraphViewer* graph) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  return graph_viewer->Name().c_str();
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtGraph_IsConstantInitializer, const OrtGraphViewer* graph, const char* name, bool check_outer_scope, _Out_ bool* ret) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  *ret = graph_viewer->IsConstantInitializer(name, check_outer_scope);
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtGraph_GetNodesIndexInTopologicalOrder, const OrtGraphViewer* graph, int execution_order, _Out_ size_t* len, _Out_ const size_t** nodes_index_in_topological_order) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  const std::vector<size_t>& nodes = graph_viewer->GetNodesInTopologicalOrder(static_cast<ExecutionOrder>(execution_order));
+  *len = nodes.size();
+  *nodes_index_in_topological_order = nodes.data();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtGraph_IsSubgraph, const OrtGraphViewer* graph, _Out_ bool* ret) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  *ret = graph_viewer->IsSubgraph();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtGraph_GetParentGraph, const OrtGraph* graph, _Outptr_ const OrtGraph** parent_graph) {
+  const ::onnxruntime::Graph* graph_ptr = reinterpret_cast<const ::onnxruntime::Graph*>(graph);
+  *parent_graph = reinterpret_cast<const OrtGraph*>(graph_ptr->ParentGraph());
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtGraph_GetParenNode, const OrtGraphViewer* graph, _Outptr_ const OrtNode** parent_node) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  *parent_node = reinterpret_cast<const OrtNode*>(graph_viewer->ParentNode());
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtGraph_GetModelPath, const OrtGraphViewer* graph, _Outptr_ const void** path) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  *path = reinterpret_cast<const void*>(&graph_viewer->ModelPath());
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtGraph_GetOrtGraph, const OrtGraphViewer* graph_viewer, _Outptr_ const OrtGraph** graph) {
+  const ::onnxruntime::GraphViewer* graph_viewer_ptr = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph_viewer);
+  *graph = reinterpret_cast<const OrtGraph*>(&graph_viewer_ptr->GetGraph());
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtGraph_GetInputsIncludingInitializers, const OrtGraphViewer* graph, _Out_ size_t* num_inputs, _Outptr_ const char*** input_names) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  const auto& inputs = graph_viewer->GetInputsIncludingInitializers();
+  *num_inputs = inputs.size();
+  *input_names = new const char*[*num_inputs];
+  for (size_t i = 0; i < *num_inputs; i++) (*input_names)[i] = inputs[i]->Name().c_str();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtGraph_GetOrtNode, const OrtGraphViewer* graph, size_t node_index, _Outptr_ const OrtNode** node) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  *node = reinterpret_cast<const OrtNode*>(graph_viewer->GetNode(node_index));
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtGraph_GetNodesConsumingInput, const OrtGraphViewer* graph, const char* input_name, _Out_ size_t* len, _Outptr_ const OrtNode*** consumers) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  std::vector<const ::onnxruntime::Node*> consumer_nodes = graph_viewer->GetConsumerNodes(input_name);
+  len = new size_t (consumer_nodes.size());
+  *consumers = new const OrtNode* [*len];
+  for (size_t i = 0; i < consumer_nodes.size(); i++) (*consumers)[i] = reinterpret_cast<const OrtNode*>(consumer_nodes[i]);
+
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtGraph_GetNodeProducingOutput, const OrtGraphViewer* graph, const char* output_name, _Outptr_ const OrtNode** producer) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  *producer = reinterpret_cast<const OrtNode*>(graph_viewer->GetProducerNode(output_name));
+  return nullptr;
+}
+
+ORT_API(int, OrtApis::OrtGraph_NumberOfNodes, const OrtGraphViewer* graph) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  return graph_viewer->NumberOfNodes();
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtGraph_MaxNodeIndex, const OrtGraphViewer* graph, _Out_ int* out) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  *out = graph_viewer->MaxNodeIndex();
+  return nullptr;
+}
+
+ORT_API(size_t, OrtApis::OrtGraph_GetOutputSize, const OrtGraphViewer* graph) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  return graph_viewer->GetOutputs().size();
+}
+
+ORT_API(const char*, OrtApis::OrtGraph_GetIthOutputName, const OrtGraphViewer* graph, size_t i) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  return graph_viewer->GetOutputs()[i]->Name().c_str();
+}
+
+ORT_API(int32_t, OrtApis::OrtGraph_GetIthOutputElemType, const OrtGraphViewer* graph, size_t i) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  return graph_viewer->GetOutputs()[i]->TypeAsProto()->tensor_type().elem_type();
+}
+
+ORT_API(size_t, OrtApis::OrtGraph_SerializeToArray, const OrtGraphViewer* graph, _Out_ void** data) {
+  const ::onnxruntime::GraphViewer* graph_viewer = reinterpret_cast<const ::onnxruntime::GraphViewer*>(graph);
+  Model model(graph_viewer->Name(), true, ModelMetaData(), PathString(),
+#if defined(ORT_MINIMAL_BUILD)
+    IOnnxRuntimeOpSchemaRegistryList(),
+#else
+    IOnnxRuntimeOpSchemaRegistryList({graph_viewer->GetSchemaRegistry()}),
+#endif
+    graph_viewer->DomainToVersionMap(), std::vector<onnx::FunctionProto>(), graph_viewer->GetGraph().GetLogger());
+  onnx::ModelProto model_proto = model.ToProto();
+  GraphViewerToProto(*graph_viewer, *model_proto.mutable_graph(), true, true);
+  size_t ret = model_proto.ByteSizeLong();
+  *data = malloc(ret);
+  model_proto.SerializeToArray(*data, ret);
+  return ret;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetName, const OrtNode* node, _Out_ const char** name) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *name = n->Name().c_str();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetDescription, const OrtNode* node, _Out_ const char** description) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *description = n->Description().c_str();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetDomain, const OrtNode* node, _Out_ const char** domain) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *domain = n->Domain().c_str();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_SinceVersion, const OrtNode* node, _Out_ int* since_version) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *since_version = n->SinceVersion();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetExecutionProviderType, const OrtNode* node, _Out_ const char** ep_type) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *ep_type = n->GetExecutionProviderType().c_str();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetOpType, const OrtNode* node, _Out_ const char** op_type) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *op_type = n->OpType().c_str();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetImplicitInputSize, const OrtNode* node, _Out_ size_t* input_size) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *input_size = n->ImplicitInputDefs().size();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetIthImplicitInputName, const OrtNode* node, size_t i, _Out_ const char** ith_input_name) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  assert(i < n->ImplicitInputDefs().size());
+  *ith_input_name = n->ImplicitInputDefs()[i]->Name().c_str();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetInputSize, const OrtNode* node, _Out_ size_t* input_size) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *input_size = n->InputDefs().size();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetIthInputName, const OrtNode* node, size_t i, _Out_ const char** ith_input_name) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  assert(i < n->InputDefs().size());
+  *ith_input_name = n->InputDefs()[i]->Name().c_str();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetOutputSize, const OrtNode* node, _Out_ size_t* output_size) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *output_size = n->OutputDefs().size();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetIthOutputName, const OrtNode* node, size_t i, _Out_ const char** ith_output_name) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  assert(i < n->OutputDefs().size());
+  if (n->OutputDefs()[i]->Exists()){
+    *ith_output_name = n->OutputDefs()[i]->Name().c_str();
+  } else {
+    *ith_output_name = nullptr;
+  }
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetIndex, const OrtNode* node, _Out_ size_t* index) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *index = n->Index();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetAttributeSize, const OrtNode* node, _Out_ size_t* attr_size) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *attr_size = n->GetAttributes().size();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetAttributeKeyCount, const OrtNode* node, const char* key, _Out_ size_t* count) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *count = n->GetAttributes().count(key);
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetAttributeIntSize, const OrtNode* node, const char* key, _Out_ int* int_size) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *int_size = n->GetAttributes().at(key).ints_size();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetAttributeFloatSize, const OrtNode* node, const char* key, _Out_ int* float_size) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *float_size = n->GetAttributes().at(key).floats_size();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetAttributeStringSize, const OrtNode* node, const char* key, _Out_ int* str_size) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *str_size = n->GetAttributes().at(key).strings_size();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetAttributeIthInt, const OrtNode* node, const char* key, int i, _Out_ int64_t* ints) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *ints = n->GetAttributes().at(key).ints(i);
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetAttributeIthFloat, const OrtNode* node, const char* key, int i, _Out_ float* floats) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *floats = n->GetAttributes().at(key).floats(i);
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetAttributeIthStr, const OrtNode* node, const char* key, int i, _Out_ const char** strs) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  *strs = n->GetAttributes().at(key).strings(i).c_str();
+  return nullptr;
+}
+
+ORT_API(const char*, OrtApis::OrtNode_GetAttributeStr, const OrtNode* node, const char* key) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  return n->GetAttributes().at(key).s().c_str();
+}
+
+ORT_API(int64_t, OrtApis::OrtNode_GetAttributeInt, const OrtNode* node, const char* key) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  return n->GetAttributes().at(key).i();
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtNode_GetSubgraphs, const OrtNode* node, _Out_ size_t* len, _Outptr_ const OrtGraphViewer*** subgraphs) {
+  const ::onnxruntime::Node* n = reinterpret_cast<const ::onnxruntime::Node*>(node);
+  std::vector<gsl::not_null<const Graph*>> subg = n->GetSubgraphs();
+  len = new size_t (subg.size());
+  *subgraphs = new const OrtGraphViewer* [*len];
+  for (size_t i = 0; i < subg.size(); i++) {
+    const ::onnxruntime::GraphViewer* graph_viewer = new const ::onnxruntime::GraphViewer(*subg[i]);
+    (*subgraphs)[i] = reinterpret_cast<const OrtGraphViewer*>(graph_viewer);
+  }
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::OrtKernelRegistry_RegisterKernel, OrtKernelRegistry* kernel_registry, OrtCustomOp* custom_op, OrtTypeConstraints* type_constraints) {
+  KernelRegistry* kr = reinterpret_cast<KernelRegistry*>(kernel_registry);
+  KernelCreateInfo kci = CreateKernelCreateInfo2("", custom_op, type_constraints);
+  return ToOrtStatus(kr->Register(std::move(kci)));
+}
+
+ORT_API_STATUS_IMPL(OrtApis::CreateOrtTypeConstraints, _Outptr_ OrtTypeConstraints** type_constraints) {
+  std::unique_ptr<OrtTypeConstraints> otc = std::make_unique<OrtTypeConstraints>();
+  *type_constraints = otc.release();
+  return nullptr;
+}
+
+ORT_API_STATUS_IMPL(OrtApis::AddTypeConstraint, _In_ OrtTypeConstraints* type_constraints, _In_ const char* type_symbol, ONNXTensorElementDataType type) {
+  type_constraints->AddTypeConstraint(type_symbol, type);
+  return nullptr;
+}
+
+ORT_API(void, OrtApis::ReleaseTypeConstraints, OrtTypeConstraints* type_constraints) {
+  delete type_constraints;
+}
+
 static constexpr OrtApiBase ort_api_base = {
     &OrtApis::GetApi,
     &OrtApis::GetVersionString};
@@ -2730,6 +3091,61 @@ static constexpr OrtApi ort_api_1_to_20 = {
     &OrtApis::KernelInfoGetAllocator,
     &OrtApis::AddExternalInitializersFromFilesInMemory,
     // End of Version 18 - DO NOT MODIFY ABOVE (see above text for more information)
+
+    &OrtApis::CreateDevice,
+    &OrtApis::DeviceGetDeviceType,
+    &OrtApis::DeviceGetMemoryType,
+    &OrtApis::DeviceGetDeviceId,
+    &OrtApis::ReleaseDevice,
+    &OrtApis::RegisterOrtExecutionProviderLibrary,
+    &OrtApis::SessionOptionsAppendOrtExecutionProvider,
+
+    &OrtApis::OrtGraph_GetName,
+    &OrtApis::OrtGraph_IsConstantInitializer,
+    &OrtApis::OrtGraph_GetNodesIndexInTopologicalOrder,
+    &OrtApis::OrtGraph_IsSubgraph,
+    &OrtApis::OrtGraph_GetParentGraph,
+    &OrtApis::OrtGraph_GetParenNode,
+    &OrtApis::OrtGraph_GetModelPath,
+    &OrtApis::OrtGraph_GetOrtGraph,
+    &OrtApis::OrtGraph_GetInputsIncludingInitializers,
+    &OrtApis::OrtGraph_GetOrtNode,
+    &OrtApis::OrtGraph_GetNodesConsumingInput,
+    &OrtApis::OrtGraph_GetNodeProducingOutput,
+    &OrtApis::OrtGraph_NumberOfNodes,
+    &OrtApis::OrtGraph_MaxNodeIndex,
+    &OrtApis::OrtGraph_GetOutputSize,
+    &OrtApis::OrtGraph_GetIthOutputName,
+    &OrtApis::OrtGraph_GetIthOutputElemType,
+    &OrtApis::OrtGraph_SerializeToArray,
+    &OrtApis::OrtNode_GetName,
+    &OrtApis::OrtNode_GetDescription,
+    &OrtApis::OrtNode_GetDomain,
+    &OrtApis::OrtNode_SinceVersion,
+    &OrtApis::OrtNode_GetExecutionProviderType,
+    &OrtApis::OrtNode_GetOpType,
+    &OrtApis::OrtNode_GetImplicitInputSize,
+    &OrtApis::OrtNode_GetIthImplicitInputName,
+    &OrtApis::OrtNode_GetInputSize,
+    &OrtApis::OrtNode_GetIthInputName,
+    &OrtApis::OrtNode_GetOutputSize,
+    &OrtApis::OrtNode_GetIthOutputName,
+    &OrtApis::OrtNode_GetIndex,
+    &OrtApis::OrtNode_GetAttributeSize,
+    &OrtApis::OrtNode_GetAttributeKeyCount,
+    &OrtApis::OrtNode_GetAttributeIntSize,
+    &OrtApis::OrtNode_GetAttributeFloatSize,
+    &OrtApis::OrtNode_GetAttributeStringSize,
+    &OrtApis::OrtNode_GetAttributeIthInt,
+    &OrtApis::OrtNode_GetAttributeIthFloat,
+    &OrtApis::OrtNode_GetAttributeIthStr,
+    &OrtApis::OrtNode_GetAttributeStr,
+    &OrtApis::OrtNode_GetAttributeInt,
+    &OrtApis::OrtNode_GetSubgraphs,
+    &OrtApis::OrtKernelRegistry_RegisterKernel,
+    &OrtApis::CreateOrtTypeConstraints,
+    &OrtApis::AddTypeConstraint,
+    &OrtApis::ReleaseTypeConstraints,
 };
 
 // OrtApiBase can never change as there is no way to know what version of OrtApiBase is returned by OrtGetApiBase.
