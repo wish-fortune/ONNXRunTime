@@ -125,6 +125,7 @@ extends:
           sdl:
             binskim:
               enabled: true
+              scanOutputDirectoryOnly: true
               targetPathPattern: '+:file|$(Build.ArtifactStagingDirectory)\**\*.pyd;+:file|$(Build.ArtifactStagingDirectory)\**\*.dll;-:file|$(Build.ArtifactStagingDirectory)\**\DirectML.dll'
           outputs:
           - output: pipelineArtifact

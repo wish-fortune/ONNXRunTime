@@ -76,6 +76,7 @@ stages:
         sdl:
             binskim:
               enabled: true
+              scanOutputDirectoryOnly: true
               targetPathPattern: '+:file|$(Build.ArtifactStagingDirectory)\**\*.pyd;+:file|$(Build.ArtifactStagingDirectory)\**\*.dll;-:file|$(Build.ArtifactStagingDirectory)\**\DirectML.dll'
         outputs:
         - output: pipelineArtifact
@@ -237,7 +238,7 @@ stages:
 
         - template: flex-downloadPipelineArtifact.yml
           parameters:
-            ArtifactName: onnxruntime_${{ parameters.EP_NAME }}
+            ArtifactName: win_${{ parameters.EP_NAME }}_wheel_${{ parameters.PYTHON_VERSION }}
             StepName: 'Download Pipeline Artifact - Windows GPU Build'
             TargetPath: '$(Build.ArtifactStagingDirectory)'
             SpecificArtifact: ${{ parameters.SpecificArtifact }}
